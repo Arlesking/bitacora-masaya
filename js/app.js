@@ -1,4 +1,4 @@
-import { sb, recordar, setRecordar } from "./sb.js";
+import { sb } from "./sb.js";
 
 // ===== Utilidades =====
 const ORDEN = ["operador", "jefe_servicio", "lider", "admin"];
@@ -10,6 +10,9 @@ const TABLA = { novedades: "novedad", tareas: "tarea", comentarios: "comentario"
 const ACCION = { INSERT: "creó", UPDATE: "cambió", DELETE: "eliminó" };
 
 const app = document.getElementById("app");
+const MIN_INACTIVIDAD = 10;
+function leer(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function guardar(k, v) { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } }
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const nivel = (rol) => ORDEN.indexOf(rol);
 const alMenos = (min) => nivel(S.rol) >= nivel(min);
@@ -217,21 +220,22 @@ async function vEntrar() {
       <input id="correo" name="correo" type="email" autocomplete="username" required>
       <label for="pin">PIN <span class="ayuda">(6 dígitos)</span></label>
       <input id="pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="current-password" class="pin" required>
-      <label class="check"><input type="checkbox" name="recordar" ${recordar() ? "checked" : ""}> Recordarme en este dispositivo</label>
-      <p class="ayuda">Desmárcalo en computadores compartidos, como el de recepción.</p>
+      <label class="check"><input type="checkbox" name="recordar" ${leer("correo") ? "checked" : ""}> Recordar mi correo en este dispositivo</label>
+      <p class="ayuda">Por seguridad, la sesión se cierra sola tras ${MIN_INACTIVIDAD} minutos sin uso.</p>
       <button class="btn ancho" type="submit">Entrar</button>
       <p class="error-txt" id="err" hidden></p>
     </form>
     <p class="ayuda" style="margin-top:20px">¿Olvidaste tu PIN? Pídele a tu líder que te asigne uno nuevo.</p>
   </div>`;
   const f = document.getElementById("f-entrar");
-  f.correo.focus();
+  f.correo.value = leer("correo") ?? "";
+  (f.correo.value ? f.pin : f.correo).focus();
   alEnviar(f, async (d) => {
     const err = document.getElementById("err");
     err.hidden = true;
     const correo = String(d.get("correo")).trim().toLowerCase(), pin = String(d.get("pin")).trim();
     if (!correo || !/^\d{6}$/.test(pin)) { err.textContent = "Escribe tu correo y un PIN de 6 dígitos."; err.hidden = false; return; }
-    setRecordar(d.get("recordar") === "on");
+    guardar("correo", d.get("recordar") === "on" ? correo : null);
     const { error } = await sb.auth.signInWithPassword({ email: correo, password: pin });
     if (error) {
       err.textContent = /invalid/i.test(error.message) ? "Correo o PIN incorrecto." : "No se pudo entrar: " + error.message;
@@ -263,6 +267,7 @@ async function vElegirHotel() {
 }
 
 async function salir() {
+  guardar("actividad", null);
   await sb.auth.signOut();
   Object.assign(S, { user: null, perfil: null, membresias: [], hotel: null, rol: null });
   ir("entrar");
@@ -919,17 +924,30 @@ function abrirCuenta() {
   alClic("#c-salir", async () => { d.close(); await salir(); }, d);
 }
 
-// En equipos compartidos la sesión se cierra tras 30 minutos sin uso
-let inactividad;
-function vigilarInactividad() {
-  clearTimeout(inactividad);
-  if (!S.user || recordar()) return;
-  inactividad = setTimeout(async () => { await salir(); aviso("Se cerró la sesión por inactividad."); }, 30 * 60000);
+// La sesión se cierra tras MIN_INACTIVIDAD minutos sin uso, en cualquier dispositivo.
+// La última actividad se guarda para que también aplique si se cerró la pestaña o el celular se bloqueó.
+function marcarActividad() {
+  if (S.user && Date.now() - (Number(leer("actividad")) || 0) > 15000) guardar("actividad", String(Date.now()));
 }
-["click", "keydown", "touchstart"].forEach((ev) => document.addEventListener(ev, vigilarInactividad, { passive: true }));
+function inactivo() {
+  const ultima = Number(leer("actividad")) || 0;
+  return ultima > 0 && Date.now() - ultima > MIN_INACTIVIDAD * 60000;
+}
+async function revisarInactividad() {
+  if (S.user && inactivo()) {
+    document.querySelectorAll("dialog").forEach((d) => d.close());
+    await salir();
+    aviso(`Se cerró la sesión tras ${MIN_INACTIVIDAD} minutos sin uso.`);
+  }
+}
+["click", "keydown", "touchstart", "scroll"].forEach((ev) => document.addEventListener(ev, marcarActividad, { passive: true }));
+document.addEventListener("visibilitychange", () => { if (!document.hidden) revisarInactividad(); });
+setInterval(revisarInactividad, 20000);
 
 // ===== Arranque =====
 async function arrancar() {
+  // Si la última vez se dejó abierta y pasó el tiempo, se pide el PIN otra vez
+  if (inactivo()) { await sb.auth.signOut(); guardar("actividad", null); }
   try {
     if (!(await cargarUsuario())) return ir("entrar");
   } catch (err) {
@@ -942,7 +960,7 @@ async function arrancar() {
   try { guardado = localStorage.getItem("hotel"); } catch { /* sin almacenamiento */ }
   const elegido = S.membresias.find((m) => m.hotel_id === guardado) ?? (S.membresias.length === 1 ? S.membresias[0] : null);
   if (elegido) await entrarAlHotel(elegido.hotel_id);
-  vigilarInactividad();
+  guardar("actividad", String(Date.now()));
   const destino = location.hash.replace(/^#\/?/, "").split("/")[0];
   if (!S.hotel) ir("hotel");
   else if (!destino || ["entrar", "hotel"].includes(destino)) ir("inicio");
