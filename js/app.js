@@ -670,10 +670,20 @@ async function vAdmin(_, params) {
   if (!alMenos("lider")) throw new Error("Esta sección es solo para líderes.");
   const tab = params.get("ver") ?? "personas";
   const pest = [["personas", "Personas"], ["areas", "Áreas"], ["turnos", "Turnos"], ["tipos", "Tipos de novedad"], ...(S.perfil.es_admin_global ? [["hoteles", "Hoteles"]] : [])];
-  app.innerHTML = `<h1>Ajustes de ${esc(S.hotel.nombre)}</h1>
+  const hotelesLider = S.membresias.filter((m) => nivel(m.rol) >= nivel("lider"));
+  app.innerHTML = `<h1>Ajustes</h1>
+    ${hotelesLider.length > 1 ? `<label for="ajuste-hotel">Hotel que estás configurando</label>
+      <select id="ajuste-hotel">${hotelesLider.map((m) => `<option value="${m.hotel_id}" ${m.hotel_id === S.hotel.id ? "selected" : ""}>${esc(m.hotel.nombre)}${m.hotel.es_prueba ? " (pruebas)" : ""}</option>`).join("")}</select>`
+      : `<p class="meta">Hotel: <strong>${esc(S.hotel.nombre)}</strong></p>`}
+    <p class="ayuda">Personas, áreas, turnos y tipos son propios de cada hotel.</p>
     <nav class="pestanas">${pest.map(([k, v]) => `<a href="#/admin?ver=${k}" class="${k === tab ? "activo" : ""}">${v}</a>`).join("")}</nav>
     <div id="panel"></div>`;
   const panel = document.getElementById("panel");
+  document.getElementById("ajuste-hotel")?.addEventListener("change", async (e) => {
+    await entrarAlHotel(e.target.value);
+    aviso("Ahora configuras " + S.hotel.nombre + ".");
+    vAdmin(_, params);
+  });
   const recargar = async () => { await entrarAlHotel(S.hotel.id); vAdmin(_, params); };
   ({ personas: aPersonas, areas: aAreas, turnos: aTurnos, tipos: aTipos, hoteles: aHoteles }[tab] ?? aPersonas)(panel, recargar);
 }
@@ -763,7 +773,7 @@ function aTurnos(panel, recargar) {
     columnas: ["Área", "Turno", "Horario", "Estado"],
     filas: S.turnos.map((t) => `<tr><td>${esc(areaDe(t.area_id))}</td><td>${esc(t.nombre)}</td><td>${t.hora_inicio.slice(0, 5)} a ${t.hora_fin.slice(0, 5)}</td>
       <td>${t.activo ? "Activo" : "Inactivo"}</td><td><button class="btn sec chico" data-alt="${t.id}">${t.activo ? "Desactivar" : "Activar"}</button></td></tr>`).join("")
-      || `<tr><td colspan="5" class="meta">Aún no hay turnos. Agrega los de cada área, por ejemplo Mañana de 06:00 a 14:00.</td></tr>`,
+      || `<tr><td colspan="5" class="meta">${esc(S.hotel.nombre)} aún no tiene turnos. Agrega los de cada área, por ejemplo Mañana de 06:00 a 14:00.</td></tr>`,
     nueva: `<select name="area" aria-label="Área">${S.areas.filter((a) => a.activa).map((a) => `<option value="${a.id}">${esc(a.nombre)}</option>`).join("")}</select>
       <input name="nombre" type="text" placeholder="Nombre (Mañana)" required aria-label="Nombre del turno">
       <input name="inicio" type="time" required aria-label="Hora de inicio" value="06:00"><input name="fin" type="time" required aria-label="Hora de fin" value="14:00">`,
