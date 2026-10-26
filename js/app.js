@@ -611,7 +611,8 @@ async function vTarea([id]) {
       ${t.descripcion ? `<p class="desc">${esc(t.descripcion)}</p>` : ""}
       <div class="meta">Asignada: <strong>${esc(asignadoTexto(t))}</strong>${t.asignada_por && t.asignada_por !== t.asignada_a ? " (por " + esc(nombreDe(t.asignada_por)) + ")" : ""}</div>
       <div class="meta">Creada por ${esc(t.creador?.nombre ?? "")} · ${fecha(t.creado_en)}${t.fecha_limite ? " · vence " + fmtFecha.format(new Date(t.fecha_limite)) : ""}</div>
-      ${t.novedad ? `<div class="meta">Origen: <a href="#/novedad/${t.novedad.id}">${esc(t.novedad.descripcion.slice(0, 80))}</a></div>` : ""}
+      ${t.novedad ? `<div class="meta">Origen: <a href="#/novedad/${t.novedad.id}">${esc(t.novedad.descripcion.slice(0, 80))}</a></div>
+        ${abierta ? `<div class="ayuda">Cuando se terminen todas las tareas de esa novedad, la novedad se cierra sola.</div>` : ""}` : ""}
       ${t.estado === "hecha" ? `<p class="meta">Hecha ${fecha(t.completada_en)}${t.nota_cierre ? ": " + esc(t.nota_cierre) : ""}</p>` : ""}
     </div>
     <div class="acciones">
@@ -629,7 +630,7 @@ async function vTarea([id]) {
 
   const actualizar = async (cambios, msg) => {
     await q(sb.from("tareas").update(cambios).eq("id", id));
-    aviso(msg); vTarea([id]);
+    aviso(cambios.estado === "hecha" && t.novedad ? msg + " Si era la última tarea, la novedad quedó cerrada." : msg); vTarea([id]);
   };
   alClic("#tomar", () => actualizar({ asignada_a: S.user.id, asignada_por: S.user.id, estado: "en_curso" }, "La tarea es tuya."));
   alClic("[data-estado]", (b) => actualizar(
