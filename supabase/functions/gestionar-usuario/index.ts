@@ -1,4 +1,4 @@
-// Crea usuarios y cambia PINs. Solo líderes (en su hotel) y administradores.
+// Crea, corrige y elimina usuarios, y cambia PINs. Solo líderes (en su hotel) y administradores.
 // Se necesita la clave de servicio para crear cuentas, por eso esto no puede vivir en la página.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
@@ -59,13 +59,66 @@ Deno.serve(async (req) => {
       return resp({ ok: true, id, yaExistia: !!existente });
     }
 
+    // Las demás acciones son sobre una persona de este hotel; a un líder solo lo toca un administrador
+    const { data: m } = await admin.from("membresias").select("id, rol")
+      .eq("perfil_id", b.perfil_id).eq("hotel_id", b.hotel_id).maybeSingle();
+    if (!m) return resp({ error: "Esa persona no está en este hotel" }, 404);
+    if (b.perfil_id === u.user.id) return resp({ error: "Tus propios datos se cambian desde Mi cuenta" }, 400);
+    if (ORDEN.indexOf(m.rol) >= ORDEN.indexOf("lider") && !soyAdmin) return resp({ error: "Solo un administrador puede cambiar a un líder" }, 403);
+    const registrar = (accion: string, antes: unknown, despues: unknown) =>
+      admin.from("log_auditoria").insert({ perfil_id: u.user.id, hotel_id: b.hotel_id, tabla: "perfiles", accion, registro_id: b.perfil_id, antes, despues });
+
     if (b.accion === "resetear_pin") {
-      const { data: m } = await admin.from("membresias").select("rol")
-        .eq("perfil_id", b.perfil_id).eq("hotel_id", b.hotel_id).maybeSingle();
-      if (!m) return resp({ error: "Esa persona no está en este hotel" }, 404);
-      if (ORDEN.indexOf(m.rol) >= ORDEN.indexOf("lider") && !soyAdmin) return resp({ error: "Solo un administrador puede cambiar el PIN de un líder" }, 403);
       const { error } = await admin.auth.admin.updateUserById(b.perfil_id, { password: String(b.pin) });
       if (error) return resp({ error: error.message }, 400);
+      await registrar("UPDATE", { pin: "anterior" }, { pin: "nuevo" });
+      return resp({ ok: true });
+    }
+
+    if (b.accion === "editar") {
+      const correo = String(b.correo ?? "").trim().toLowerCase();
+      const nombre = String(b.nombre ?? "").trim();
+      if (!correo || !nombre) return resp({ error: "Falta correo o nombre" }, 400);
+      const { data: antes } = await admin.from("perfiles").select("nombre, correo").eq("id", b.perfil_id).single();
+      if (correo !== antes.correo) {
+        const { data: otro } = await admin.from("perfiles").select("id").eq("correo", correo).maybeSingle();
+        if (otro) return resp({ error: "Ese correo ya lo usa otra persona" }, 409);
+        const { error } = await admin.auth.admin.updateUserById(b.perfil_id, { email: correo, email_confirm: true });
+        if (error) return resp({ error: error.message }, 400);
+      }
+      const { error: ep } = await admin.from("perfiles").update({ nombre, correo }).eq("id", b.perfil_id);
+      if (ep) return resp({ error: ep.message }, 400);
+      await registrar("UPDATE", antes, { nombre, correo });
+      return resp({ ok: true });
+    }
+
+    if (b.accion === "eliminar") {
+      // Solo se borra a quien no ha dejado nada en la bitácora; si tiene historial, se le quita el acceso
+      const id = b.perfil_id;
+      const conteos = await Promise.all([
+        admin.from("novedades").select("id", { count: "exact", head: true }).or(`autor_id.eq.${id},para_perfil_id.eq.${id}`),
+        admin.from("tareas").select("id", { count: "exact", head: true }).or(`creado_por.eq.${id},asignada_a.eq.${id},asignada_por.eq.${id}`),
+        admin.from("comentarios").select("id", { count: "exact", head: true }).eq("autor_id", id),
+        admin.from("novedad_lecturas").select("novedad_id", { count: "exact", head: true }).eq("perfil_id", id),
+      ]);
+      if (conteos.some((c) => c.error)) return resp({ error: "No se pudo revisar su historial" }, 500);
+      if (conteos.some((c) => (c.count ?? 0) > 0)) {
+        return resp({ error: "Esta persona ya tiene registros en la bitácora. Para no perder el historial, quítale el acceso en vez de eliminarla." }, 409);
+      }
+      const { data: antes } = await admin.from("perfiles").select("nombre, correo").eq("id", id).single();
+      // El acceso a este hotel se borra con la sesión de quien llama, para que el registro diga quién fue
+      const { error: em } = await yo.from("membresias").delete().eq("id", m.id);
+      if (em) return resp({ error: em.message }, 400);
+      const { count: otros } = await admin.from("membresias").select("id", { count: "exact", head: true }).eq("perfil_id", id);
+      if ((otros ?? 0) > 0) {
+        await registrar("DELETE", antes, null);
+        return resp({ ok: true, soloEsteHotel: true });
+      }
+      const { error: ep } = await admin.from("perfiles").delete().eq("id", id);
+      if (ep) return resp({ error: ep.message }, 400);
+      const { error: eu2 } = await admin.auth.admin.deleteUser(id);
+      if (eu2) return resp({ error: eu2.message }, 400);
+      await registrar("DELETE", antes, null);
       return resp({ ok: true });
     }
 

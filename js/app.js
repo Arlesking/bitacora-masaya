@@ -6,7 +6,7 @@ const ROL = { operador: "Operador", jefe_servicio: "Jefe de servicio", lider: "L
 const URG = { baja: "Baja", media: "Media", alta: "Alta", critica: "Crítica" };
 const EST_N = { abierta: "Abierta", seguimiento: "En seguimiento", cerrada: "Cerrada", anulada: "Anulada" };
 const EST_T = { pendiente: "Pendiente", en_curso: "En curso", hecha: "Hecha", cancelada: "Cancelada" };
-const TABLA = { novedades: "novedad", tareas: "tarea", comentarios: "comentario", membresias: "acceso", areas: "área", turnos: "turno", tipos_novedad: "tipo de novedad", hoteles: "hotel" };
+const TABLA = { perfiles: "persona", novedades: "novedad", tareas: "tarea", comentarios: "comentario", membresias: "acceso", areas: "área", turnos: "turno", tipos_novedad: "tipo de novedad", hoteles: "hotel" };
 const ACCION = { INSERT: "creó", UPDATE: "cambió", DELETE: "eliminó" };
 
 const app = document.getElementById("app");
@@ -726,15 +726,34 @@ function aPersonas(panel, recargar) {
 
   alClic("[data-p]", async (b) => {
     const p = S.personas.find((x) => x.id === b.dataset.p);
-    const d = dialogo(`<form method="dialog"><h2 style="margin-top:0">${esc(p.nombre)}</h2>
+    const d = dialogo(`<form method="dialog"><h2 style="margin-top:0">Editar persona</h2>
+      <label for="e-nombre">Nombre</label><input id="e-nombre" type="text" value="${esc(p.nombre)}" required>
+      <label for="e-correo">Correo <span class="ayuda">(con el que entra)</span></label><input id="e-correo" type="email" value="${esc(p.correo)}" required>
       <label for="e-rol">Rol</label><select id="e-rol">${roles.map((r) => `<option value="${r}" ${r === p.rol ? "selected" : ""}>${ROL[r]}</option>`).join("")}</select>
       <label for="e-area">Área</label><select id="e-area">${opArea(p.area_id)}</select>
       <label class="check"><input type="checkbox" id="e-activa" ${p.activa ? "checked" : ""}> Tiene acceso a este hotel</label>
       <div class="acciones"><button class="btn" id="e-guardar" type="button">Guardar</button><button class="btn sec" type="button" id="e-pin">Asignar PIN nuevo</button>
-      <button class="btn sec" type="button" data-cerrar>Cerrar</button></div></form>`);
+      <button class="btn sec" type="button" data-cerrar>Cerrar</button></div>
+      <div class="acciones"><button class="btn peligro chico" type="button" id="e-eliminar">Eliminar persona</button></div>
+      <p class="ayuda">Eliminar solo funciona si la persona aún no ha registrado nada. Si ya tiene historial, desmarca "Tiene acceso".</p></form>`);
     alClic("#e-guardar", async () => {
-      await q(sb.from("membresias").update({ rol: d.querySelector("#e-rol").value, area_id: d.querySelector("#e-area").value || null, activa: d.querySelector("#e-activa").checked }).eq("id", p.membresia));
-      d.close(); aviso("Cambios guardados."); recargar();
+      const nombre = d.querySelector("#e-nombre").value.trim(), correo = d.querySelector("#e-correo").value.trim().toLowerCase();
+      if (!nombre || !correo.includes("@")) throw new Error("Revisa el nombre y el correo.");
+      if (nombre !== p.nombre || correo !== p.correo) {
+        await llamarFuncion({ accion: "editar", hotel_id: S.hotel.id, perfil_id: p.id, nombre, correo });
+      }
+      const cambios = { rol: d.querySelector("#e-rol").value, area_id: d.querySelector("#e-area").value || null, activa: d.querySelector("#e-activa").checked };
+      if (cambios.rol !== p.rol || cambios.area_id !== (p.area_id ?? null) || cambios.activa !== p.activa) {
+        await q(sb.from("membresias").update(cambios).eq("id", p.membresia));
+      }
+      d.close(); aviso(correo !== p.correo ? `Cambios guardados. Ahora entra con ${correo}.` : "Cambios guardados."); recargar();
+    }, d);
+    alClic("#e-eliminar", async () => {
+      if (!(await confirmar(`¿Eliminar a ${p.nombre}? Se borra su usuario y ya no podrá entrar. No se puede deshacer.`, { boton: "Eliminar", peligro: true }))) return;
+      const r = await llamarFuncion({ accion: "eliminar", hotel_id: S.hotel.id, perfil_id: p.id });
+      d.close();
+      aviso(r.soloEsteHotel ? `${p.nombre} ya no está en este hotel; sigue en sus otros hoteles.` : `${p.nombre} fue eliminada.`);
+      recargar();
     }, d);
     alClic("#e-pin", async () => {
       const pin = pinAleatorio();
@@ -855,7 +874,8 @@ function describir(r) {
     const val = (k, v) => k === "asignada_a" ? nombreDe(v) : k === "area_id" ? areaDe(v) : k === "estado" ? (EST_N[v] ?? EST_T[v] ?? v) : k === "rol" ? ROL[v] : String(v ?? "—");
     detalle = cambios.filter((k) => nombres[k]).map((k) => `${nombres[k]}: ${val(k, a[k])} → ${val(k, d[k])}`).join("; ");
     if (r.tabla === "membresias") detalle = nombreDe(d.perfil_id) + (detalle ? " · " + detalle : "");
-  }
+    if (r.tabla === "perfiles") detalle = d.pin ? `PIN de ${nombreDe(r.registro_id)}` : ["nombre", "correo"].filter((k) => a[k] !== d[k]).map((k) => `${k}: ${a[k]} → ${d[k]}`).join("; ");
+  } else if (r.accion === "DELETE") detalle = a.nombre ? `${a.nombre} (${a.correo ?? ""})` : r.tabla === "membresias" ? `acceso de ${nombreDe(a.perfil_id)}` : (a.titulo ?? a.nombre ?? "");
   return { cosa, detalle: String(detalle ?? "").slice(0, 200) };
 }
 
