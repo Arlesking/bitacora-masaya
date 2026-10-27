@@ -220,6 +220,7 @@ async function vEntrar() {
       <input id="correo" name="correo" type="email" autocomplete="username" required>
       <label for="pin">PIN <span class="ayuda">(6 dígitos)</span></label>
       <input id="pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="current-password" class="pin" required>
+      <label class="check"><input type="checkbox" id="ver-pin"> Mostrar el PIN mientras lo escribo</label>
       <label class="check"><input type="checkbox" name="recordar" ${leer("correo") ? "checked" : ""}> Recordar mi correo en este dispositivo</label>
       <p class="ayuda">Por seguridad, la sesión se cierra sola tras ${MIN_INACTIVIDAD} minutos sin uso.</p>
       <button class="btn ancho" type="submit">Entrar</button>
@@ -229,6 +230,7 @@ async function vEntrar() {
   </div>`;
   const f = document.getElementById("f-entrar");
   f.correo.value = leer("correo") ?? "";
+  f.querySelector("#ver-pin").addEventListener("change", (e) => (f.pin.type = e.target.checked ? "text" : "password"));
   (f.correo.value ? f.pin : f.correo).focus();
   alEnviar(f, async (d) => {
     const err = document.getElementById("err");
@@ -719,7 +721,8 @@ function aPersonas(panel, recargar) {
       if (!/^\d{6}$/.test(f.get("pin"))) throw new Error("El PIN debe tener 6 dígitos.");
       const r = await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: f.get("nombre"), correo: f.get("correo"), pin: f.get("pin"), rol: f.get("rol"), area_id: f.get("area") || null });
       d.close();
-      aviso(r.yaExistia ? "Esa persona ya tenía usuario: se le dio acceso a este hotel con su PIN actual." : "Persona agregada. Su PIN inicial es " + f.get("pin") + ".");
+      if (r.yaExistia) aviso("Esa persona ya tenía usuario: se le dio acceso a este hotel con su PIN actual.");
+      else mostrarAcceso(f.get("nombre"), String(f.get("correo")).trim().toLowerCase(), f.get("pin"));
       recargar();
     });
   }, panel);
@@ -759,9 +762,24 @@ function aPersonas(panel, recargar) {
       const pin = pinAleatorio();
       if (!(await confirmar(`El PIN de ${p.nombre} pasará a ser ${pin}. Díselo en persona.`, { boton: "Cambiar PIN" }))) return;
       await llamarFuncion({ accion: "resetear_pin", hotel_id: S.hotel.id, perfil_id: p.id, pin });
-      aviso(`PIN cambiado. El nuevo PIN es ${pin}.`);
+      d.close();
+      mostrarAcceso(p.nombre, p.correo, pin);
     }, d);
   }, panel);
+}
+
+// Los datos de acceso quedan a la vista hasta que se cierren, para anotarlos sin prisa
+function mostrarAcceso(nombre, correo, pin) {
+  const texto = `Bitácora Masaya\n${location.origin}${location.pathname}\nCorreo: ${correo}\nPIN: ${pin}`;
+  const d = dialogo(`<div><h2 style="margin-top:0">Datos de acceso de ${esc(nombre)}</h2>
+    <p class="meta">Entrégaselos en persona. Puede cambiar el PIN después en Mi cuenta.</p>
+    <label>Correo</label><p class="titulo" style="margin:0;overflow-wrap:anywhere">${esc(correo)}</p>
+    <label>PIN</label><p class="pin" style="font-size:2rem;font-weight:700;margin:0;text-align:left">${esc(pin)}</p>
+    <div class="acciones"><button class="btn sec" id="copiar">Copiar datos</button><button class="btn" data-cerrar>Ya lo anoté</button></div></div>`);
+  alClic("#copiar", async () => {
+    try { await navigator.clipboard.writeText(texto); aviso("Datos copiados. Puedes pegarlos en un mensaje."); }
+    catch { aviso("No se pudo copiar; anótalos a mano.", true); }
+  }, d);
 }
 
 async function llamarFuncion(body) {
