@@ -948,9 +948,11 @@ function abrirCuenta() {
   const d = dialogo(`<div><h2 style="margin-top:0">${esc(S.perfil.nombre)}</h2><p class="meta">${esc(S.perfil.correo)}</p>
     <form id="f-pin"><label for="nuevo-pin">Cambiar mi PIN</label>
       <input id="nuevo-pin" name="pin" type="password" inputmode="numeric" maxlength="6" class="pin" autocomplete="new-password" placeholder="Nuevo PIN">
+      <label class="check"><input type="checkbox" id="ver-nuevo-pin"> Mostrar el PIN</label>
       <div class="acciones"><button class="btn sec" type="submit">Guardar PIN</button></div></form>
     <div class="acciones">${S.membresias.length > 1 ? `<button class="btn sec" id="c-hotel">Cambiar de hotel</button>` : ""}
       <button class="btn peligro" id="c-salir">Cerrar sesión</button><button class="btn sec" data-cerrar>Cerrar</button></div></div>`);
+  d.querySelector("#ver-nuevo-pin").addEventListener("change", (e) => (d.querySelector("#nuevo-pin").type = e.target.checked ? "text" : "password"));
   alEnviar(d.querySelector("#f-pin"), async (f) => {
     const pin = String(f.get("pin"));
     if (!/^\d{6}$/.test(pin)) throw new Error("El PIN debe tener 6 dígitos.");
