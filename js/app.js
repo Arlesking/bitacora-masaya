@@ -871,18 +871,51 @@ function aPersonas(panel, recargar) {
   alClic("#nueva", async () => {
     const pin = pinAleatorio();
     const d = dialogo(`<form method="dialog" id="f-p"><h2 style="margin-top:0">Agregar persona</h2>
-      <label for="p-nombre">Nombre</label><input id="p-nombre" name="nombre" type="text" required>
       <label for="p-correo">Correo</label><input id="p-correo" name="correo" type="email" required>
-      <label for="p-pin">PIN inicial <span class="ayuda">(díselo en persona; puede cambiarlo después)</span></label>
-      <input id="p-pin" name="pin" type="text" inputmode="numeric" maxlength="6" class="pin" value="${pin}" required>
+      <p class="ayuda" id="p-existe" hidden></p>
+      <label for="p-nombre">Nombre</label><input id="p-nombre" name="nombre" type="text" required>
+      <div id="p-pin-caja"><label for="p-pin">PIN inicial <span class="ayuda">(díselo en persona; puede cambiarlo después)</span></label>
+      <input id="p-pin" name="pin" type="text" inputmode="numeric" maxlength="6" class="pin" value="${pin}" required></div>
       <label for="p-rol">Rol</label><select id="p-rol" name="rol">${roles.map((r) => `<option value="${r}">${ROL[r]}</option>`).join("")}</select>
       <label for="p-area">Área</label><select id="p-area" name="area">${opArea(null)}</select>
       <div class="acciones"><button class="btn" type="submit">Agregar</button><button class="btn sec" type="button" data-cerrar>Cancelar</button></div></form>`);
+    // Si el correo ya tiene cuenta (en cualquier hotel), conserva su nombre y su PIN: no se pide otro
+    const $ = (sel) => d.querySelector(sel);
+    let existente = null, buscando = null, buscado = "";
+    const buscar = () => {
+      const correo = $("#p-correo").value.trim().toLowerCase();
+      if (correo === buscado) return buscando;
+      buscado = correo;
+      buscando = (async () => {
+        let r = null;
+        if (/^\S+@\S+\.\S+$/.test(correo)) {
+          const { data } = await sb.rpc("persona_por_correo", { p_hotel: S.hotel.id, p_correo: correo });
+          r = data?.[0] ?? null;
+        }
+        if (correo !== buscado) return;
+        if (existente && !r) $("#p-nombre").value = "";
+        existente = r;
+        $("#p-existe").hidden = !r;
+        $("#p-existe").textContent = !r ? "" : r.en_este_hotel
+          ? "Esta persona ya está en este hotel. Para cambiar su rol, área o PIN, usa Editar en la lista."
+          : "Esta persona ya existe. Se le dará acceso a este hotel y entrará con el mismo PIN que ya usa.";
+        $("#p-nombre").readOnly = !!r;
+        if (r) $("#p-nombre").value = r.nombre;
+        $("#p-pin-caja").hidden = !!r;
+        $("#p-pin").disabled = !!r;
+        d.querySelector("button[type=submit]").disabled = !!r?.en_este_hotel;
+      })();
+      return buscando;
+    };
+    $("#p-correo").addEventListener("change", buscar);
+    $("#p-correo").addEventListener("blur", buscar);
     alEnviar(d.querySelector("form"), async (f) => {
-      if (!/^\d{6}$/.test(f.get("pin"))) throw new Error("El PIN debe tener 6 dígitos.");
-      const r = await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: f.get("nombre"), correo: f.get("correo"), pin: f.get("pin"), rol: f.get("rol"), area_id: f.get("area") || null });
+      await buscar();
+      if (existente?.en_este_hotel) throw new Error("Esta persona ya está en este hotel.");
+      if (!existente && !/^\d{6}$/.test(f.get("pin"))) throw new Error("El PIN debe tener 6 dígitos.");
+      const r = await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: f.get("nombre"), correo: f.get("correo"), pin: existente ? undefined : f.get("pin"), rol: f.get("rol"), area_id: f.get("area") || null });
       d.close();
-      if (r.yaExistia) aviso("Esa persona ya tenía usuario: se le dio acceso a este hotel con su PIN actual.");
+      if (r.yaExistia) aviso("Listo: ya tiene acceso a este hotel y entra con su PIN de siempre.");
       else mostrarAcceso(f.get("nombre"), String(f.get("correo")).trim().toLowerCase(), f.get("pin"));
       recargar();
     });
