@@ -19,6 +19,12 @@ Bitácora web de turnos para hoteles: novedades, entrega de turno, tareas y regi
 
 Las novedades no se borran: se anulan con un motivo. Todo cambio queda en `log_auditoria`, escrito por la base de datos.
 
+## Módulos
+
+Algunas secciones son módulos que el administrador enciende por hotel en **Ajustes → Módulos**, eligiendo qué áreas los usan. Los líderes los ven siempre que estén encendidos; el resto del personal solo si su área está elegida. La base de datos aplica la misma regla (`puedo_usar_modulo`), así que ocultarlo en el menú no es la única barrera.
+
+- **Checklist**: el líder arma listas por área y por turno (o para todos los turnos) en **Ajustes → Checklists**. El personal del área marca cada punto en su turno; queda guardado quién y cuándo, y cada día y turno queda en el historial. Los días anteriores no se pueden cambiar.
+
 ## Base de datos
 
 Las migraciones están en `supabase/migrations/` y se aplican en orden.

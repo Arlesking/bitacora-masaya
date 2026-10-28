@@ -6,7 +6,10 @@ const ROL = { operador: "Operador", jefe_servicio: "Jefe de servicio", lider: "L
 const URG = { baja: "Baja", media: "Media", alta: "Alta", critica: "Crítica" };
 const EST_N = { abierta: "Abierta", seguimiento: "En seguimiento", cerrada: "Cerrada", anulada: "Anulada" };
 const EST_T = { pendiente: "Pendiente", en_curso: "En curso", hecha: "Hecha", cancelada: "Cancelada" };
-const TABLA = { perfiles: "persona", novedades: "novedad", tareas: "tarea", comentarios: "comentario", membresias: "acceso", areas: "área", turnos: "turno", tipos_novedad: "tipo de novedad", hoteles: "hotel" };
+const TABLA = { perfiles: "persona", novedades: "novedad", tareas: "tarea", comentarios: "comentario", membresias: "acceso", areas: "área", turnos: "turno", tipos_novedad: "tipo de novedad", hoteles: "hotel",
+  modulos_hotel: "módulo", checklist_plantillas: "lista de checklist", checklist_items: "punto de checklist", checklist_registros: "checklist del turno", checklist_marcas: "marca de checklist" };
+// Módulos que el administrador enciende por hotel y para ciertas áreas
+const MODULOS = { checklist: { nombre: "Checklist", desc: "Listas de puntos por área y turno que el personal marca en su turno." } };
 const ACCION = { INSERT: "creó", UPDATE: "cambió", DELETE: "eliminó" };
 
 const app = document.getElementById("app");
@@ -105,7 +108,17 @@ function alEnviar(form, fn) {
 // ===== Estado =====
 const S = {
   user: null, perfil: null, membresias: [], hotel: null, rol: null, area: null,
-  areas: [], tipos: [], personas: [], turnos: [], grupo: [],
+  areas: [], tipos: [], personas: [], turnos: [], grupo: [], modulos: [],
+};
+// Un módulo se ve si está encendido en el hotel y la persona es líder o de un área que lo usa.
+// La base de datos aplica la misma regla, así que ocultarlo aquí es solo para el menú.
+function usaModulo(modulo) {
+  const m = S.modulos.find((x) => x.modulo === modulo);
+  return !!m?.activo && (alMenos("lider") || (!!S.area && m.areas.includes(S.area)));
+}
+const areasDelModulo = (modulo) => {
+  const m = S.modulos.find((x) => x.modulo === modulo);
+  return S.areas.filter((a) => a.activa && m?.areas.includes(a.id));
 };
 const nombreDe = (id) => S.personas.find((p) => p.id === id)?.nombre ?? "—";
 const areaDe = (id) => S.areas.find((a) => a.id === id)?.nombre ?? "—";
@@ -133,13 +146,14 @@ async function entrarAlHotel(id) {
   if (!m) return false;
   S.hotel = m.hotel; S.rol = m.rol; S.area = m.area_id ?? null;
   try { localStorage.setItem("hotel", id); } catch { /* sin almacenamiento */ }
-  const [areas, tipos, personas, grupo] = await Promise.all([
+  const [areas, tipos, personas, grupo, modulos] = await Promise.all([
     q(sb.from("areas").select("*").eq("hotel_id", id).order("nombre")),
     q(sb.from("tipos_novedad").select("*").eq("hotel_id", id).order("nombre")),
     q(sb.from("membresias").select("id, rol, area_id, activa, perfil:perfiles(id, nombre, correo)").eq("hotel_id", id)),
     q(sb.rpc("hoteles_del_grupo", { p_hotel: id })),
+    q(sb.from("modulos_hotel").select("*").eq("hotel_id", id)),
   ]);
-  S.areas = areas; S.tipos = tipos; S.grupo = grupo ?? [];
+  S.areas = areas; S.tipos = tipos; S.grupo = grupo ?? []; S.modulos = modulos;
   S.personas = personas.filter((p) => p.perfil).map((p) => ({ ...p.perfil, rol: p.rol, area_id: p.area_id, activa: p.activa, membresia: p.id }))
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
   S.turnos = areas.length ? await q(sb.from("turnos").select("*").in("area_id", areas.map((a) => a.id)).order("hora_inicio")) : [];
@@ -170,6 +184,7 @@ function pintarBarra() {
   document.getElementById("hotel-nombre").textContent = S.hotel.nombre + (S.hotel.es_prueba ? " (pruebas)" : "");
   document.getElementById("hotel-rol").textContent = `${S.perfil.nombre} · ${ROL[S.rol]}${S.area ? " · " + areaDe(S.area) : ""}`;
   document.querySelectorAll("#menu [data-min]").forEach((a) => (a.hidden = !alMenos(a.dataset.min)));
+  document.querySelectorAll("#menu [data-modulo]").forEach((a) => (a.hidden = !usaModulo(a.dataset.modulo)));
 }
 function ocultarBarra() {
   document.getElementById("barra").hidden = true;
@@ -180,7 +195,7 @@ function ocultarBarra() {
 const RUTAS = {
   entrar: vEntrar, hotel: vElegirHotel, inicio: vInicio, novedades: vNovedades, novedad: vNovedad,
   "nueva-novedad": vNuevaNovedad, tareas: vTareas, tarea: vTarea, "nueva-tarea": vNuevaTarea,
-  admin: vAdmin, log: vLog,
+  admin: vAdmin, log: vLog, checklist: vChecklist,
 };
 
 function ir(ruta) { location.hash = "#/" + ruta; }
@@ -330,6 +345,7 @@ async function vInicio() {
         .is("asignada_a", null).eq("estado", "pendiente").order("creado_en", { ascending: false }).limit(50))
       : Promise.resolve([]),
   ]);
+  const checklist = S.area && usaModulo("checklist") ? await checklistDelTurno(S.area) : null;
   const leidasSet = new Set(leidas.map((l) => l.novedad_id));
   const sinLeer = soloVisibles(novs).filter((n) => !leidasSet.has(n.id));
   const urgentes = alMenos("jefe_servicio")
@@ -341,6 +357,12 @@ async function vInicio() {
 
   app.innerHTML = `<h1>Hola, ${esc(S.perfil.nombre.split(" ")[0])}</h1>
     ${turno ? `<p class="meta">Turno actual: <strong>${esc(turno.nombre)}</strong></p>` : ""}
+    ${checklist?.listas.length ? (() => {
+      const total = checklist.listas.reduce((n, p) => n + p.items.length, 0), hechos = checklist.listas.reduce((n, p) => n + hechosDe(p), 0);
+      return `<a class="tarjeta" href="#/checklist"><div class="fila entre"><span class="titulo">Checklist del turno</span>
+        <span class="chip ${total && hechos === total ? "listo" : "estado"}">${hechos} de ${total}</span></div>
+        <div class="meta">${checklist.listas.map((p) => esc(p.nombre)).join(" · ")}</div></a>`;
+    })() : ""}
     <div class="fila entre"><h2>Entrega de turno: sin leer (${sinLeer.length})</h2>
       ${sinLeer.length ? `<button class="btn sec chico" id="leer-todo">Marcar todo como leído</button>` : ""}</div>
     ${sinLeer.length ? sinLeer.map((n) => tarjetaNovedad(n, true)).join("") : `<p class="vacio">Estás al día. No hay novedades nuevas de los últimos 3 días.</p>`}
@@ -673,11 +695,147 @@ async function vTarea([id]) {
   });
 }
 
+// ===== Checklist =====
+// Día en que empezó el turno: el de noche que cruza la medianoche cuenta como del día anterior
+function fechaTurno(turno) {
+  const d = new Date();
+  if (turno && turno.hora_fin.slice(0, 5) < turno.hora_inicio.slice(0, 5) && d.toTimeString().slice(0, 5) < turno.hora_fin.slice(0, 5)) d.setDate(d.getDate() - 1);
+  return new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+const turnoDe = (id) => (id ? S.turnos.find((t) => t.id === id)?.nombre ?? "—" : "Todos los turnos");
+const quien = (id) => (id === S.user.id ? S.perfil.nombre : nombreDe(id));
+const fmtDia = new Intl.DateTimeFormat("es-CO", { weekday: "long", day: "numeric", month: "long" });
+const dia = (f) => fmtDia.format(new Date(f + "T12:00"));
+const puntosActivos = (p) => (p?.items ?? []).filter((i) => i.activo).sort((a, b) => a.orden - b.orden);
+
+// Las listas del turno que corre ahora en un área, con sus puntos y lo ya marcado
+async function checklistDelTurno(areaId) {
+  const turno = turnoActual(areaId);
+  const fecha = fechaTurno(turno);
+  const todas = await q(sb.from("checklist_plantillas").select("*, items:checklist_items(*)").eq("area_id", areaId).eq("activa", true).order("nombre"));
+  const listas = todas.filter((p) => !p.turno_id || p.turno_id === turno?.id)
+    .map((p) => ({ ...p, turnoReg: p.turno_id ?? turno?.id ?? null, items: puntosActivos(p) }));
+  const regs = listas.length
+    ? await q(sb.from("checklist_registros").select("*, marcas:checklist_marcas(*)").in("plantilla_id", listas.map((p) => p.id)).eq("fecha", fecha))
+    : [];
+  for (const p of listas) p.registro = regs.find((r) => r.plantilla_id === p.id && r.turno_id === p.turnoReg) ?? null;
+  return { turno, fecha, listas };
+}
+const hechosDe = (p) => p.items.filter((i) => p.registro?.marcas.some((m) => m.item_id === i.id && m.hecho)).length;
+
+// El registro del día se crea con la primera marca
+async function abrirRegistro(p, fecha) {
+  await q(sb.from("checklist_registros").upsert({ plantilla_id: p.id, fecha, turno_id: p.turnoReg, abierto_por: S.user.id },
+    { onConflict: "plantilla_id,fecha,turno_id", ignoreDuplicates: true }));
+  const c = sb.from("checklist_registros").select("*, marcas:checklist_marcas(*)").eq("plantilla_id", p.id).eq("fecha", fecha);
+  return q((p.turnoReg ? c.eq("turno_id", p.turnoReg) : c.is("turno_id", null)).single());
+}
+
+async function vChecklist(_, params) {
+  if (!usaModulo("checklist")) throw new Error("El checklist no está activo para tu área.");
+  const areas = alMenos("lider") ? areasDelModulo("checklist") : S.areas.filter((a) => a.id === S.area);
+  const areaId = areas.some((a) => a.id === params.get("area")) ? params.get("area") : (areas.find((a) => a.id === S.area) ?? areas[0])?.id;
+  const ver = params.get("ver") ?? "turno";
+  const enlace = (extra = {}) => "#/checklist?" + new URLSearchParams({ area: areaId ?? "", ver, ...extra });
+  if (!areaId) {
+    app.innerHTML = `<h1>Checklist</h1><p class="vacio">Ninguna área usa el checklist todavía. ${S.perfil.es_admin_global ? "Elígelas en Ajustes → Módulos." : "Pídele al administrador que las elija."}</p>`;
+    return;
+  }
+  app.innerHTML = `<h1>Checklist</h1>
+    ${areas.length > 1 ? `<select id="cl-area" aria-label="Área" style="margin-bottom:12px">${areas.map((a) => `<option value="${a.id}" ${a.id === areaId ? "selected" : ""}>${esc(a.nombre)}</option>`).join("")}</select>`
+      : `<p class="meta">Área: <strong>${esc(areaDe(areaId))}</strong></p>`}
+    <nav class="pestanas"><a href="${enlace({ ver: "turno" })}" class="${ver === "turno" ? "activo" : ""}">Turno actual</a>
+      <a href="${enlace({ ver: "historial" })}" class="${ver === "historial" ? "activo" : ""}">Historial</a></nav>
+    <div id="cl"></div>`;
+  document.getElementById("cl-area")?.addEventListener("change", (e) => (location.hash = enlace({ area: e.target.value })));
+  const cl = document.getElementById("cl");
+  if (ver === "historial") return params.get("registro") ? clRegistro(cl, params.get("registro"), enlace) : clHistorial(cl, areaId, enlace);
+  return clTurno(cl, areaId);
+}
+
+function textoMarca(m) {
+  return m ? `${m.hecho ? "Hecho" : "Desmarcado"} por ${esc(quien(m.marcado_por))} · ${fecha(m.marcado_en)}` : "";
+}
+
+async function clTurno(cl, areaId) {
+  const { turno, fecha: f, listas } = await checklistDelTurno(areaId);
+  const tarjeta = (p) => {
+    const hechos = hechosDe(p);
+    return `<div class="tarjeta" data-lista="${p.id}">
+      <div class="fila entre"><span class="titulo">${esc(p.nombre)}</span>
+        <span class="chip ${p.items.length && hechos === p.items.length ? "listo" : "estado"}" data-progreso>${hechos} de ${p.items.length}</span></div>
+      ${p.items.map((i) => { const m = p.registro?.marcas.find((x) => x.item_id === i.id); return `<label class="punto-check">
+        <input type="checkbox" data-item="${i.id}" ${m?.hecho ? "checked" : ""}>
+        <span><span class="txt">${esc(i.texto)}</span><span class="meta" data-quien>${textoMarca(m)}</span></span></label>`; }).join("")
+        || `<p class="meta">Esta lista no tiene puntos.</p>`}
+    </div>`;
+  };
+  cl.innerHTML = `<p class="meta">${turno ? "Turno <strong>" + esc(turno.nombre) + "</strong> · " : ""}${esc(dia(f))}</p>
+    ${listas.length ? listas.map(tarjeta).join("")
+      : `<p class="vacio">${alMenos("lider") ? "No hay listas para este turno. Créalas en Ajustes → Checklists." : "Tu líder aún no ha creado listas para este turno."}</p>`}`;
+
+  cl.querySelectorAll("[data-item]").forEach((cb) => cb.addEventListener("change", async () => {
+    const caja = cb.closest("[data-lista]");
+    const p = listas.find((x) => x.id === caja.dataset.lista);
+    cb.disabled = true;
+    try {
+      if (!p.registro) p.registro = await abrirRegistro(p, f);
+      const m = await q(sb.from("checklist_marcas").upsert({ registro_id: p.registro.id, item_id: cb.dataset.item, hecho: cb.checked },
+        { onConflict: "registro_id,item_id" }).select("*").single());
+      p.registro.marcas = [...p.registro.marcas.filter((x) => x.item_id !== m.item_id), m];
+      cb.closest(".punto-check").querySelector("[data-quien]").innerHTML = textoMarca(m);
+      const hechos = hechosDe(p), prog = caja.querySelector("[data-progreso]");
+      prog.textContent = `${hechos} de ${p.items.length}`;
+      prog.className = "chip " + (hechos === p.items.length ? "listo" : "estado");
+      if (hechos === p.items.length) aviso(`Lista "${p.nombre}" completa.`);
+    } catch (err) {
+      cb.checked = !cb.checked;
+      aviso(err.message, true);
+    } finally { cb.disabled = false; }
+  }));
+}
+
+async function clHistorial(cl, areaId, enlace) {
+  const d = new Date(Date.now() - 30 * 864e5);
+  const desde = new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const regs = await q(sb.from("checklist_registros")
+    .select("*, plantilla:checklist_plantillas(nombre, items:checklist_items(id, activo)), marcas:checklist_marcas(hecho)")
+    .eq("area_id", areaId).gte("fecha", desde).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(200));
+  cl.innerHTML = `<p class="meta">Últimos 30 días. Se guarda una lista por día y turno desde la primera marca.</p>
+    ${regs.map((r) => {
+      const total = Math.max(r.plantilla?.items.filter((i) => i.activo).length ?? 0, r.marcas.length);
+      const hechos = r.marcas.filter((m) => m.hecho).length;
+      return `<a class="tarjeta" href="${enlace({ ver: "historial", registro: r.id })}">
+        <div class="fila entre"><span class="titulo">${esc(r.plantilla?.nombre ?? "Lista")}</span>
+          <span class="chip ${total && hechos === total ? "listo" : "estado"}">${hechos} de ${total}</span></div>
+        <div class="meta">${esc(dia(r.fecha))} · ${esc(r.turno_id ? turnoDe(r.turno_id) : "Sin turno")} · abrió ${esc(quien(r.abierto_por))}</div></a>`;
+    }).join("") || `<p class="vacio">Todavía no hay checklists registrados en esta área.</p>`}`;
+}
+
+async function clRegistro(cl, id, enlace) {
+  const r = await q(sb.from("checklist_registros")
+    .select("*, plantilla:checklist_plantillas(nombre, items:checklist_items(*)), marcas:checklist_marcas(*)").eq("id", id).maybeSingle());
+  if (!r) throw new Error("Este checklist no existe o no tienes acceso a él.");
+  const puntos = puntosActivos(r.plantilla);
+  const sueltas = r.marcas.filter((m) => !puntos.some((i) => i.id === m.item_id));   // puntos que ya se quitaron de la lista
+  const fila = (texto, m) => `<div class="punto-hist ${m?.hecho ? "hecho" : ""}"><span class="marca" aria-hidden="true">${m?.hecho ? "✓" : "○"}</span>
+    <span><span class="txt">${esc(texto)}</span><span class="meta">${m ? textoMarca(m) : "Sin marcar"}</span></span></div>`;
+  cl.innerHTML = `<p><a href="${enlace({ ver: "historial" })}">← Historial</a></p>
+    <div class="tarjeta"><div class="titulo">${esc(r.plantilla?.nombre ?? "Lista")}</div>
+      <div class="meta">${esc(dia(r.fecha))} · ${esc(r.turno_id ? turnoDe(r.turno_id) : "Sin turno")} · abrió ${esc(quien(r.abierto_por))}</div>
+      ${puntos.map((i) => fila(i.texto, r.marcas.find((m) => m.item_id === i.id))).join("")}
+      ${sueltas.map((m) => fila(m.texto ?? "Punto eliminado", m)).join("")}
+    </div>
+    <p class="ayuda">Los checklists de días anteriores quedan como historial y ya no se pueden cambiar.</p>`;
+}
+
 // ===== Ajustes (líder y administrador) =====
 async function vAdmin(_, params) {
   if (!alMenos("lider")) throw new Error("Esta sección es solo para líderes.");
   const tab = params.get("ver") ?? "personas";
-  const pest = [["personas", "Personas"], ["areas", "Áreas"], ["turnos", "Turnos"], ["tipos", "Tipos de novedad"], ...(S.perfil.es_admin_global ? [["hoteles", "Hoteles"]] : [])];
+  const pest = [["personas", "Personas"], ["areas", "Áreas"], ["turnos", "Turnos"], ["tipos", "Tipos de novedad"],
+    ...(usaModulo("checklist") ? [["checklists", "Checklists"]] : []),
+    ...(S.perfil.es_admin_global ? [["modulos", "Módulos"], ["hoteles", "Hoteles"]] : [])];
   const hotelesLider = S.membresias.filter((m) => nivel(m.rol) >= nivel("lider"));
   app.innerHTML = `<h1>Ajustes</h1>
     ${hotelesLider.length > 1 ? `<label for="ajuste-hotel">Hotel que estás configurando</label>
@@ -693,7 +851,7 @@ async function vAdmin(_, params) {
     vAdmin(_, params);
   });
   const recargar = async () => { await entrarAlHotel(S.hotel.id); vAdmin(_, params); };
-  ({ personas: aPersonas, areas: aAreas, turnos: aTurnos, tipos: aTipos, hoteles: aHoteles }[tab] ?? aPersonas)(panel, recargar);
+  ({ personas: aPersonas, areas: aAreas, turnos: aTurnos, tipos: aTipos, checklists: aChecklists, modulos: aModulos, hoteles: aHoteles }[tab] ?? aPersonas)(panel, recargar);
 }
 
 function aPersonas(panel, recargar) {
@@ -844,6 +1002,99 @@ function aTipos(panel, recargar) {
   });
 }
 
+// Solo el administrador enciende módulos y elige las áreas que los usan
+function aModulos(panel, recargar) {
+  const areas = S.areas.filter((a) => a.activa);
+  panel.innerHTML = Object.entries(MODULOS).map(([k, def]) => {
+    const m = S.modulos.find((x) => x.modulo === k) ?? { activo: false, areas: [] };
+    return `<form class="tarjeta" data-mod="${k}"><div class="titulo">${esc(def.nombre)}</div><p class="meta">${esc(def.desc)}</p>
+      <label class="check"><input type="checkbox" name="activo" ${m.activo ? "checked" : ""}> Activo en ${esc(S.hotel.nombre)}</label>
+      <label>Áreas que lo usan <span class="ayuda">(los líderes lo ven siempre que esté activo)</span></label>
+      ${areas.map((a) => `<label class="check"><input type="checkbox" name="area" value="${a.id}" ${m.areas.includes(a.id) ? "checked" : ""}> ${esc(a.nombre)}</label>`).join("")}
+      <div class="acciones"><button class="btn" type="submit">Guardar</button></div></form>`;
+  }).join("") + `<p class="ayuda">Pruébalo primero en el Hotel de pruebas. Apagar un módulo lo oculta, pero no borra lo que ya se registró.</p>`;
+  panel.querySelectorAll("[data-mod]").forEach((f) => alEnviar(f, async (d) => {
+    await q(sb.from("modulos_hotel").upsert({ hotel_id: S.hotel.id, modulo: f.dataset.mod, activo: d.get("activo") === "on", areas: d.getAll("area") },
+      { onConflict: "hotel_id,modulo" }));
+    aviso("Módulo guardado."); recargar();
+  }));
+}
+
+function opcionesTurno(areaId, sel) {
+  return `<option value="">Todos los turnos</option>` + S.turnos.filter((t) => t.area_id === areaId && t.activo)
+    .map((t) => `<option value="${t.id}" ${t.id === sel ? "selected" : ""}>${esc(t.nombre)} (${t.hora_inicio.slice(0, 5)} a ${t.hora_fin.slice(0, 5)})</option>`).join("");
+}
+
+function camposLista(pre, areas, p) {
+  return `${p ? `<p class="meta">Área: <strong>${esc(areaDe(p.area_id))}</strong></p>`
+      : `<label for="${pre}-area">Área</label><select id="${pre}-area" name="area">${areas.map((a) => `<option value="${a.id}">${esc(a.nombre)}</option>`).join("")}</select>`}
+    <label for="${pre}-turno">Turno</label><select id="${pre}-turno" name="turno">${opcionesTurno(p?.area_id ?? areas[0]?.id, p?.turno_id)}</select>
+    <label for="${pre}-nombre">Nombre de la lista</label>
+    <input id="${pre}-nombre" name="nombre" type="text" required maxlength="80" placeholder="Apertura de turno" value="${esc(p?.nombre ?? "")}">
+    <label for="${pre}-puntos">Puntos <span class="ayuda">(uno por línea, en el orden en que se hacen)</span></label>
+    <textarea id="${pre}-puntos" name="puntos" required maxlength="6000" placeholder="Contar la base de caja&#10;Revisar llegadas del día">${esc(puntosActivos(p).map((i) => i.texto).join("\n"))}</textarea>`;
+}
+
+// Los puntos se escriben uno por línea. Los que se quitan quedan inactivos para no perder el historial.
+async function guardarPuntos(plantillaId, items, texto) {
+  const lineas = [...new Set(String(texto).split("\n").map((t) => t.trim()).filter(Boolean))];
+  const libres = [...items].sort((a, b) => b.activo - a.activo);
+  const cambios = [], nuevos = [];
+  lineas.forEach((t, orden) => {
+    const i = libres.findIndex((x) => x.texto === t);
+    if (i < 0) return nuevos.push({ plantilla_id: plantillaId, texto: t, orden });
+    const [it] = libres.splice(i, 1);
+    if (it.orden !== orden || !it.activo) cambios.push(q(sb.from("checklist_items").update({ orden, activo: true }).eq("id", it.id)));
+  });
+  for (const it of libres) if (it.activo) cambios.push(q(sb.from("checklist_items").update({ activo: false }).eq("id", it.id)));
+  if (nuevos.length) cambios.push(q(sb.from("checklist_items").insert(nuevos)));
+  await Promise.all(cambios);
+}
+const sinPuntos = (texto) => !String(texto).split("\n").some((t) => t.trim());
+
+async function aChecklists(panel, recargar) {
+  const areas = areasDelModulo("checklist");
+  const listas = (await q(sb.from("checklist_plantillas").select("*, items:checklist_items(*)").eq("hotel_id", S.hotel.id).order("nombre")))
+    .sort((a, b) => areaDe(a.area_id).localeCompare(areaDe(b.area_id)));
+  panel.innerHTML = `${areas.length ? "" : `<p class="vacio">Ninguna área usa el checklist. ${S.perfil.es_admin_global ? "Elígelas en la pestaña Módulos." : "Pídele al administrador que las elija."}</p>`}
+    <div class="tabla-scroll"><table><thead><tr><th>Área</th><th>Lista</th><th>Turno</th><th>Puntos</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${listas.map((p) => `<tr><td>${esc(areaDe(p.area_id))}</td><td>${esc(p.nombre)}</td><td>${esc(turnoDe(p.turno_id))}</td>
+      <td>${puntosActivos(p).length}</td><td>${p.activa ? "Activa" : "Inactiva"}</td><td><button class="btn sec chico" data-l="${p.id}">Editar</button></td></tr>`).join("")
+      || `<tr><td colspan="6" class="meta">Aún no hay listas. Crea la primera abajo.</td></tr>`}
+    </tbody></table></div>
+    ${areas.length ? `<h2>Nueva lista</h2><form id="f-lista">${camposLista("nl", areas, null)}
+      <div class="acciones"><button class="btn" type="submit">Crear lista</button></div></form>` : ""}
+    <p class="ayuda">Cada área puede tener listas distintas para cada turno. Una lista de "Todos los turnos" aparece en cualquier turno del área.
+      Los turnos se configuran en la pestaña Turnos.</p>`;
+
+  const f = panel.querySelector("#f-lista");
+  if (f) {
+    f.area.addEventListener("change", () => (f.turno.innerHTML = opcionesTurno(f.area.value)));
+    alEnviar(f, async (d) => {
+      const nombre = String(d.get("nombre")).trim();
+      if (!nombre || sinPuntos(d.get("puntos"))) throw new Error("Escribe el nombre y al menos un punto.");
+      const p = await q(sb.from("checklist_plantillas").insert({ hotel_id: S.hotel.id, area_id: d.get("area"), turno_id: d.get("turno") || null, nombre }).select("id").single());
+      await guardarPuntos(p.id, [], d.get("puntos"));
+      aviso("Lista creada."); recargar();
+    });
+  }
+
+  alClic("[data-l]", async (b) => {
+    const p = listas.find((x) => x.id === b.dataset.l);
+    const d = dialogo(`<form method="dialog"><h2 style="margin-top:0">Editar lista</h2>${camposLista("el", areas, p)}
+      <label class="check"><input type="checkbox" name="activa" ${p.activa ? "checked" : ""}> Lista activa</label>
+      <p class="ayuda">Cambiar los puntos no altera lo que ya se marcó en turnos anteriores.</p>
+      <div class="acciones"><button class="btn" type="submit">Guardar</button><button class="btn sec" type="button" data-cerrar>Cancelar</button></div></form>`);
+    alEnviar(d.querySelector("form"), async (fd) => {
+      const nombre = String(fd.get("nombre")).trim();
+      if (!nombre || sinPuntos(fd.get("puntos"))) throw new Error("Escribe el nombre y al menos un punto.");
+      await q(sb.from("checklist_plantillas").update({ nombre, turno_id: fd.get("turno") || null, activa: fd.get("activa") === "on" }).eq("id", p.id));
+      await guardarPuntos(p.id, p.items, fd.get("puntos"));
+      d.close(); aviso("Lista guardada."); recargar();
+    });
+  }, panel);
+}
+
 async function aHoteles(panel) {
   const [hoteles, grupos] = await Promise.all([
     q(sb.from("hoteles").select("*").order("nombre")),
@@ -885,13 +1136,15 @@ function describir(r) {
   const cosa = TABLA[r.tabla] ?? r.tabla;
   const d = r.despues ?? {}, a = r.antes ?? {};
   let detalle = "";
-  if (r.accion === "INSERT") detalle = d.titulo ?? d.descripcion ?? d.texto ?? d.nombre ?? (r.tabla === "membresias" ? `${nombreDe(d.perfil_id)} como ${ROL[d.rol] ?? d.rol}` : "");
+  if (r.accion === "INSERT") detalle = d.titulo ?? d.descripcion ?? d.texto ?? d.nombre ?? (r.tabla === "checklist_registros" ? `${d.fecha} · ${turnoDe(d.turno_id)}` : null) ?? (r.tabla === "modulos_hotel" ? MODULOS[d.modulo]?.nombre : null) ?? (r.tabla === "membresias" ? `${nombreDe(d.perfil_id)} como ${ROL[d.rol] ?? d.rol}` : "");
   else if (r.accion === "UPDATE") {
     const cambios = Object.keys(d).filter((k) => JSON.stringify(d[k]) !== JSON.stringify(a[k]));
-    const nombres = { estado: "estado", asignada_a: "asignada a", rol: "rol", area_id: "área", activa: "acceso", activo: "activo", descripcion: "descripción", urgencia: "urgencia", motivo_anulacion: "motivo" };
-    const val = (k, v) => k === "asignada_a" ? nombreDe(v) : k === "area_id" ? areaDe(v) : k === "estado" ? (EST_N[v] ?? EST_T[v] ?? v) : k === "rol" ? ROL[v] : String(v ?? "—");
+    const nombres = { hecho: "hecho", nombre: "nombre", texto: "texto", areas: "áreas", turno_id: "turno", estado: "estado", asignada_a: "asignada a", rol: "rol", area_id: "área", activa: "acceso", activo: "activo", descripcion: "descripción", urgencia: "urgencia", motivo_anulacion: "motivo" };
+    const val = (k, v) => k === "asignada_a" ? nombreDe(v) : k === "area_id" ? areaDe(v) : k === "estado" ? (EST_N[v] ?? EST_T[v] ?? v) : k === "rol" ? ROL[v]
+      : k === "hecho" ? (v ? "sí" : "no") : k === "turno_id" ? turnoDe(v) : k === "areas" ? (v ?? []).map(areaDe).join(", ") || "ninguna" : String(v ?? "—");
     detalle = cambios.filter((k) => nombres[k]).map((k) => `${nombres[k]}: ${val(k, a[k])} → ${val(k, d[k])}`).join("; ");
     if (r.tabla === "membresias") detalle = nombreDe(d.perfil_id) + (detalle ? " · " + detalle : "");
+    if (r.tabla === "checklist_marcas" || r.tabla === "modulos_hotel") detalle = (d.texto ?? MODULOS[d.modulo]?.nombre ?? "") + (detalle ? " · " + detalle : "");
     if (r.tabla === "perfiles") detalle = d.pin ? `PIN de ${nombreDe(r.registro_id)}` : ["nombre", "correo"].filter((k) => a[k] !== d[k]).map((k) => `${k}: ${a[k]} → ${d[k]}`).join("; ");
   } else if (r.accion === "DELETE") detalle = a.nombre ? `${a.nombre} (${a.correo ?? ""})` : r.tabla === "membresias" ? `acceso de ${nombreDe(a.perfil_id)}` : (a.titulo ?? a.nombre ?? "");
   return { cosa, detalle: String(detalle ?? "").slice(0, 200) };
@@ -989,7 +1242,8 @@ async function arrancar() {
   // Si la última vez se dejó abierta y pasó el tiempo, se pide el PIN otra vez
   if (inactivo()) { await sb.auth.signOut(); guardar("actividad", null); }
   try {
-    if (!(await cargarUsuario())) return ir("entrar");
+    // Si ya se está en la entrada, ir() no cambia la dirección y hay que pintarla aquí
+    if (!(await cargarUsuario())) return location.hash === "#/entrar" ? enrutar() : ir("entrar");
   } catch (err) {
     aviso(err.message, true);
     await sb.auth.signOut();
