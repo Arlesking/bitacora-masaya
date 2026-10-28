@@ -493,6 +493,7 @@ async function vNovedad([id]) {
   const propia = n.hotel_id === S.hotel.id;
   const puedeEditar = propia && (n.autor_id === S.user.id || alMenos("jefe_servicio"));
   const color = n.tipo?.color ?? "#6b7280";
+  const tareasAbiertas = tareas.filter((t) => ["pendiente", "en_curso"].includes(t.estado)).length;
 
   app.innerHTML = `<p><a href="#/novedades">← Novedades</a></p>
     <div class="tarjeta borde-tipo ${n.estado === "anulada" ? "anulada" : ""}" style="--tipo:${esc(color)}">
@@ -506,9 +507,11 @@ async function vNovedad([id]) {
     </div>
     ${puedeEditar && n.estado !== "anulada" ? `<div class="acciones">
       ${n.estado !== "seguimiento" && n.estado !== "cerrada" ? `<button class="btn sec chico" data-estado="seguimiento">En seguimiento</button>` : ""}
-      ${n.estado !== "cerrada" ? `<button class="btn sec chico" data-estado="cerrada">Cerrar</button>` : `<button class="btn sec chico" data-estado="abierta">Reabrir</button>`}
+      ${n.estado === "cerrada" ? `<button class="btn sec chico" data-estado="abierta">Reabrir</button>`
+        : !tareasAbiertas ? `<button class="btn sec chico" data-estado="cerrada">Cerrar</button>` : ""}
       <a class="btn sec chico" href="#/nueva-tarea?novedad=${n.id}">Convertir en tarea</a>
-      <button class="btn peligro chico" id="anular">Anular</button></div>` : ""}
+      <button class="btn peligro chico" id="anular">Anular</button></div>
+      ${tareasAbiertas && n.estado !== "cerrada" ? `<p class="ayuda">No se puede cerrar todavía: tiene ${tareasAbiertas} ${tareasAbiertas === 1 ? "tarea abierta" : "tareas abiertas"}. Se cerrará sola cuando se terminen.</p>` : ""}` : ""}
     ${tareas.length ? `<h2>Tareas creadas desde esta novedad</h2>${tareas.map(tarjetaTarea).join("")}` : ""}
     <h2>Seguimiento (${coms.length})</h2>
     ${coms.map((c) => `<div class="comentario"><div class="meta">${esc(c.autor?.nombre ?? "")} · ${fecha(c.creado_en)}</div><div class="desc">${esc(c.texto)}</div></div>`).join("") || `<p class="meta">Sin comentarios todavía.</p>`}
