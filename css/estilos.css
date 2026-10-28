@@ -163,3 +163,15 @@ th { background: #faf9f6; font-weight: 600; white-space: nowrap; }
 
 dialog { border: 0; border-radius: var(--radio); padding: 20px; width: min(440px, calc(100% - 32px)); box-shadow: 0 10px 40px rgba(0,0,0,.25); }
 dialog::backdrop { background: rgba(0,0,0,.35); }
+
+/* Checklist */
+.chip.listo { background: #e3f4ea; color: var(--ok); }
+.punto-check { display: flex; align-items: flex-start; gap: 12px; font-weight: 400; font-size: 1rem; margin: 0; padding: 12px 0; border-top: 1px solid var(--borde); cursor: pointer; }
+.punto-check:first-of-type { margin-top: 10px; }
+.punto-check input { width: 24px; height: 24px; flex: none; margin: 0; accent-color: var(--ok); }
+.punto-check .txt, .punto-hist .txt { display: block; overflow-wrap: anywhere; }
+.punto-check input:checked + span .txt { color: var(--suave); text-decoration: line-through; }
+.punto-hist { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-top: 1px solid var(--borde); }
+.punto-hist:first-of-type { margin-top: 10px; }
+.punto-hist .marca { width: 24px; flex: none; text-align: center; font-weight: 700; color: var(--suave); }
+.punto-hist.hecho .marca { color: var(--ok); }
