@@ -7,7 +7,7 @@ const URG = { baja: "Baja", media: "Media", alta: "Alta", critica: "Crítica" };
 const EST_N = { abierta: "Abierta", seguimiento: "En seguimiento", cerrada: "Cerrada", anulada: "Anulada" };
 const EST_T = { pendiente: "Pendiente", en_curso: "En curso", hecha: "Hecha", cancelada: "Cancelada" };
 const TABLA = { perfiles: "persona", novedades: "novedad", tareas: "tarea", comentarios: "comentario", membresias: "acceso", areas: "área", turnos: "turno", tipos_novedad: "tipo de novedad", hoteles: "hotel",
-  modulos_hotel: "módulo", checklist_plantillas: "lista de checklist", checklist_items: "punto de checklist", checklist_registros: "checklist del turno", checklist_marcas: "marca de checklist" };
+  avisos: "aviso", modulos_hotel: "módulo", checklist_plantillas: "lista de checklist", checklist_items: "punto de checklist", checklist_registros: "checklist del turno", checklist_marcas: "marca de checklist" };
 // Módulos que el administrador enciende por hotel y para ciertas áreas
 const MODULOS = { checklist: { nombre: "Checklist", desc: "Listas de puntos por área y turno que el personal marca en su turno." } };
 const ACCION = { INSERT: "creó", UPDATE: "cambió", DELETE: "eliminó" };
@@ -406,9 +406,72 @@ function abrirMas() {
   d.querySelector("#mas-hotel")?.addEventListener("click", () => { d.close(); S.hotel = null; ir("hotel"); });
 }
 
+// ===== Tener en cuenta =====
+// Avisos cortos del hotel con fecha de fin. Todos los ven; de Jefe de servicio en adelante los manejan.
+// "hasta" es un día: el aviso se ve hasta que termina ese día y luego desaparece solo.
+const diaLocal = (d = new Date()) => new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const masDias = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return diaLocal(d); };
+const fmtHasta = new Intl.DateTimeFormat("es-CO", { weekday: "short", day: "numeric", month: "short" });
+function hastaTexto(f) {
+  if (f === diaLocal()) return "Solo hoy";
+  if (f === masDias(1)) return "Hasta mañana";
+  return "Hasta el " + fmtHasta.format(new Date(f + "T12:00")).replace(/[.,]/g, "");
+}
+const avisosVigentes = () => q(sb.from("avisos").select("*").eq("hotel_id", S.hotel.id).is("quitado_en", null)
+  .gte("hasta", diaLocal()).order("hasta").order("creado_en"));
+
+function tarjetaAviso(a) {
+  const puede = alMenos("jefe_servicio");
+  return `<${puede ? `button type="button" data-aviso="${a.id}"` : "div"} class="aviso-t">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3z"/></svg>
+    <span><span class="aviso-txt">${esc(a.texto)}</span><small>${hastaTexto(a.hasta)}</small></span></${puede ? "button" : "div"}>`;
+}
+
+function abrirAviso(a, alGuardar) {
+  const opciones = [["Hoy", diaLocal()], ["Mañana", masDias(1)], ["Esta semana", masDias((7 - new Date().getDay()) % 7)]];
+  const marcada = a ? opciones.find(([, f]) => f === a.hasta)?.[1] ?? "otra" : null;
+  const d = dialogo(`<form id="f-aviso">
+      <h2 style="margin-top:0">${a ? "Cambiar aviso" : "Nuevo aviso"}</h2>
+      <label for="aviso-texto">¿Qué hay que tener en cuenta?</label>
+      <textarea id="aviso-texto" name="texto" maxlength="300" required placeholder="Ej: Piscina pequeña cerrada por arreglo">${esc(a?.texto ?? "")}</textarea>
+      <label>¿Hasta cuándo?</label>
+      <div class="fichas envolver" role="group" aria-label="Hasta cuándo">
+        ${opciones.map(([t, f]) => `<button type="button" class="ficha ${marcada === f ? "activa" : ""}" data-hasta="${f}">${t}</button>`).join("")}
+        <button type="button" class="ficha ${marcada === "otra" ? "activa" : ""}" data-hasta="otra">Elegir fecha</button>
+      </div>
+      <input type="date" name="fecha" min="${diaLocal()}" value="${marcada === "otra" ? a.hasta : ""}" ${marcada === "otra" ? "" : "hidden"} aria-label="Fecha">
+      <div class="acciones"><button class="btn" type="submit">Guardar aviso</button><button class="btn sec" type="button" data-cerrar>Volver</button></div>
+      ${a ? `<div class="acciones"><button class="btn peligro sec" type="button" id="aviso-quitar">Quitar ya</button></div>` : `<p class="meta">Se quita solo cuando pasa la fecha.</p>`}
+    </form>`);
+  d.classList.add("hoja");
+  let hasta = marcada === "otra" ? a.hasta : marcada;
+  const fecha = d.querySelector("[name=fecha]");
+  d.querySelectorAll("[data-hasta]").forEach((b) => b.addEventListener("click", () => {
+    d.querySelectorAll("[data-hasta]").forEach((x) => x.classList.toggle("activa", x === b));
+    fecha.hidden = b.dataset.hasta !== "otra";
+    hasta = b.dataset.hasta === "otra" ? fecha.value || null : b.dataset.hasta;
+    if (!fecha.hidden) fecha.focus();
+  }));
+  fecha.addEventListener("change", () => (hasta = fecha.value || null));
+  alEnviar(d.querySelector("form"), async (f) => {
+    const texto = String(f.get("texto")).trim();
+    if (!texto) throw new Error("Escribe el aviso.");
+    if (!hasta) throw new Error("Elige hasta cuándo.");
+    if (hasta < diaLocal()) throw new Error("La fecha ya pasó.");
+    if (a) await q(sb.from("avisos").update({ texto, hasta }).eq("id", a.id));
+    else await q(sb.from("avisos").insert({ hotel_id: S.hotel.id, texto, hasta, autor_id: S.user.id }));
+    d.close(); aviso(a ? "Aviso cambiado." : "Aviso guardado. Ya lo ve todo el hotel."); alGuardar();
+  });
+  alClic("#aviso-quitar", async () => {
+    await q(sb.from("avisos").update({ quitado_en: new Date().toISOString(), quitado_por: S.user.id }).eq("id", a.id));
+    d.close(); aviso("Aviso quitado."); alGuardar();
+  }, d);
+}
+
 // ===== Mi turno =====
 async function vInicio() {
-  const [sinLeer, misT, bandeja, urgentesTodas] = await Promise.all([
+  const [avisos, sinLeer, misT, bandeja, urgentesTodas] = await Promise.all([
+    avisosVigentes().catch(() => []),
     novedadesSinLeer(),
     misTareas(),
     S.area || alMenos("lider")
@@ -436,6 +499,9 @@ async function vInicio() {
       <span>${turno ? `Turno <strong>${esc(turno.nombre)}</strong> · ${hora(turno.hora_inicio)} a ${hora(turno.hora_fin)}` : "Checklist del turno"}</span>
       ${total ? `<a href="#/checklist" class="progreso" aria-label="Checklist: ${hechos} de ${total}">${hechos}/${total}<span class="barra-prog"><i style="width:${Math.round(hechos / total * 100)}%"></i></span></a>` : ""}
     </div>` : ""}
+    ${avisos.length || alMenos("jefe_servicio") ? `<div class="fila entre"><h2>Tener en cuenta</h2>
+      ${alMenos("jefe_servicio") ? `<button class="btn sec chico" id="aviso-nuevo">+ Agregar</button>` : ""}</div>
+      ${avisos.map(tarjetaAviso).join("") || `<p class="vacio chico">Nada por ahora. Agrega lo que el equipo deba recordar por unos días.</p>`}` : ""}
     <div class="contadores">
       <button type="button" class="contador ${sinLeer.length ? "ambar" : ""}" data-ir="sec-leer"><b>${sinLeer.length}</b><span>Por leer</span></button>
       <button type="button" class="contador ${mias.length ? "verde" : ""}" data-ir="sec-tareas"><b>${mias.length}</b><span>Mis tareas</span></button>
@@ -452,6 +518,9 @@ async function vInicio() {
 
   app.querySelectorAll("[data-ir]").forEach((b) => b.addEventListener("click", () =>
     document.getElementById(b.dataset.ir).scrollIntoView({ behavior: "smooth", block: "start" })));
+  alClic("#aviso-nuevo", () => abrirAviso(null, vInicio));
+  app.querySelectorAll("[data-aviso]").forEach((b) => b.addEventListener("click", () =>
+    abrirAviso(avisos.find((a) => a.id === b.dataset.aviso), vInicio)));
   alClic("#leer-todo", async () => {
     await q(sb.from("novedad_lecturas").upsert(sinLeer.map((n) => ({ novedad_id: n.id, perfil_id: S.user.id })), { onConflict: "novedad_id,perfil_id", ignoreDuplicates: true }));
     aviso("Listo, todo leído.");
