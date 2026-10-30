@@ -246,3 +246,13 @@ dialog.hoja { margin: auto auto 0; width: 100%; max-width: 520px; border-radius:
 .hoja-it svg { color: var(--marca); }
 .enlace { background: none; border: 0; padding: 10px 0; color: var(--marca); font-weight: 600; text-decoration: underline; cursor: pointer; }
 .opciones.apagado { opacity: .4; pointer-events: none; }
+
+/* Tener en cuenta: avisos con fecha de fin */
+.aviso-t { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; font: inherit; color: var(--texto);
+  background: #fff7db; border: 1px solid #f0d98a; border-radius: var(--radio); padding: 10px 12px; margin-bottom: 8px; }
+button.aviso-t { cursor: pointer; }
+.aviso-t svg { color: #8a6a00; flex: none; width: 22px; height: 22px; margin-top: 1px; }
+.aviso-txt { display: block; white-space: pre-line; overflow-wrap: anywhere; }
+.aviso-t small { display: block; color: #7a5d00; font-weight: 600; font-size: .85rem; }
+.vacio.chico { padding: 4px 0 12px; text-align: left; font-size: .9rem; }
+.fichas.envolver { flex-wrap: wrap; overflow: visible; }
