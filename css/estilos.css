@@ -84,6 +84,9 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
   padding: 12px 14px; margin-bottom: 10px; box-shadow: var(--sombra); color: inherit; text-decoration: none;
 }
 a.tarjeta:hover { border-color: var(--marca); }
+.tarjeta.log.con-enlace { position: relative; padding-right: 34px; }
+.tarjeta.log .sobre { margin-top: 4px; color: var(--marca); font-size: .9rem; overflow-wrap: anywhere; }
+.tarjeta.log .ir { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--suave); font-size: 1.4rem; }
 .tarjeta.borde-tipo { border-left: 5px solid var(--tipo, var(--borde)); }
 .tarjeta.no-leida { background: #fffdf4; }
 .tarjeta.anulada { opacity: .6; }
