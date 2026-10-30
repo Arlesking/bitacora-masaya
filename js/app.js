@@ -561,16 +561,14 @@ async function vNuevaNovedad() {
         <textarea id="descripcion" name="descripcion" required maxlength="4000"></textarea>
         <label>Urgencia</label>
         <div class="opciones" role="radiogroup">${Object.entries(URG).map(([k, v]) => `<label><input type="radio" name="urgencia" value="${k}"><span>${v}</span></label>`).join("")}</div>
-        <label>¿Para quién?</label>
-        <div class="opciones">
-          <label><input type="radio" name="para" value="hotel" checked><span>Todo el hotel</span></label>
-          <label><input type="radio" name="para" value="area"><span>Una o más áreas</span></label>
-          <label><input type="radio" name="para" value="persona"><span>Una persona</span></label>
+        <label>¿Quién debe enterarse? <span class="ayuda">(puedes tocar varias)</span></label>
+        <div class="opciones" id="destino">
+          <label><input type="checkbox" name="todos" checked><span>Todo el hotel</span></label>
+          ${S.areas.filter((a) => a.activa).map((a) => `<label><input type="checkbox" name="areas" value="${a.id}"><span>${esc(a.nombre)}</span></label>`).join("")}
         </div>
-        <div id="para-area" hidden><label>Áreas <span class="ayuda">(toca todas las que apliquen)</span></label>
-          <div class="opciones">${S.areas.filter((a) => a.activa).map((a) => `<label><input type="checkbox" name="areas" value="${a.id}"><span>${esc(a.nombre)}</span></label>`).join("")}</div></div>
+        <button type="button" class="enlace" id="a-persona">Enviar solo a una persona</button>
         <div id="para-persona" hidden><label for="persona">Persona</label>
-          <select id="persona" name="persona">${S.personas.filter((p) => p.activa).map((p) => `<option value="${p.id}">${esc(p.nombre)}${p.area_id ? " · " + esc(areaDe(p.area_id)) : ""}</option>`).join("")}</select></div>
+          <select id="persona" name="persona"><option value="">Nadie en particular</option>${S.personas.filter((p) => p.activa).map((p) => `<option value="${p.id}">${esc(p.nombre)}${p.area_id ? " · " + esc(areaDe(p.area_id)) : ""}</option>`).join("")}</select></div>
         ${enGrupo ? `<label class="check"><input type="checkbox" name="grupo"> Compartir con ${esc(S.grupo.filter((h) => h.id !== S.hotel.id).map((h) => h.nombre).join(", "))}</label>` : ""}
         <div class="acciones"><button class="btn ancho" type="submit">Guardar novedad</button></div>
       </section>
@@ -601,21 +599,27 @@ async function vNuevaNovedad() {
     if (u) u.checked = true;
     mostrar(2);
   }));
-  f.querySelectorAll("input[name=para]").forEach((r) => r.addEventListener("change", () => {
-    document.getElementById("para-area").hidden = f.para.value !== "area";
-    document.getElementById("para-persona").hidden = f.para.value !== "persona";
-  }));
+  // "Todo el hotel" y las áreas se excluyen: marcar un área quita "Todo el hotel" y al quitar todas vuelve
+  const cajasArea = [...f.querySelectorAll("input[name=areas]")];
+  const marcarAreas = (ids) => { cajasArea.forEach((c) => (c.checked = ids.includes(c.value))); f.todos.checked = !ids.length; };
+  cajasArea.forEach((c) => c.addEventListener("change", () => (f.todos.checked = !cajasArea.some((x) => x.checked))));
+  f.todos.addEventListener("change", () => marcarAreas([]));
+  document.getElementById("a-persona").addEventListener("click", (e) => {
+    e.target.hidden = true;
+    document.getElementById("para-persona").hidden = false;
+    f.persona.focus();
+  });
+  f.persona.addEventListener("change", () => document.getElementById("destino").classList.toggle("apagado", !!f.persona.value));
   alEnviar(f, async (d) => {
     const desc = String(d.get("descripcion")).trim();
     if (!d.get("tipo")) { mostrar(1); throw new Error("Elige qué pasó."); }
     if (!desc) throw new Error("Escribe qué pasó.");
-    const para = d.get("para");
-    const areas = para === "area" ? d.getAll("areas") : [];
-    if (para === "area" && !areas.length) throw new Error("Elige al menos un área.");
+    const persona = d.get("persona") || null;
+    const areas = persona ? [] : d.getAll("areas");
     const turno = turnoActual(S.area ?? areas[0] ?? null);
     const fila = {
       hotel_id: S.hotel.id, autor_id: S.user.id, tipo_id: d.get("tipo"), urgencia: d.get("urgencia"),
-      para_area_id: areas[0] ?? null, para_areas: areas.length ? areas : null, para_perfil_id: para === "persona" ? d.get("persona") : null,
+      para_area_id: areas[0] ?? null, para_areas: areas.length ? areas : null, para_perfil_id: persona,
       lugar: String(d.get("lugar") ?? "").trim() || null, descripcion: desc, compartida_grupo: d.get("grupo") === "on",
       turno_id: turno?.id ?? null,
     };
