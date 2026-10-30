@@ -222,7 +222,8 @@ async function enrutar() {
 
   document.querySelectorAll("#menu [data-ruta]").forEach((a) => a.classList.toggle("activo",
     a.dataset.ruta === nombre || (a.dataset.ruta === "novedades" && nombre === "novedad")
-    || (a.dataset.ruta === "tareas" && ["tarea", "nueva-tarea"].includes(nombre))
+    || (a.dataset.ruta === "tareas" && nombre === "tarea")
+    || (a.dataset.ruta === "nueva-novedad" && nombre === "nueva-tarea")
     || (a.dataset.ruta === "mas" && ["checklist", "admin", "log"].includes(nombre))));
   if (S.hotel && nombre !== "inicio") refrescarInsignias();
   app.innerHTML = `<p class="cargando">Cargando…</p>`;
@@ -416,6 +417,19 @@ function abrirMas() {
   d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
   d.querySelector("#mas-cuenta").addEventListener("click", () => { d.close(); abrirCuenta(); });
   d.querySelector("#mas-hotel")?.addEventListener("click", () => { d.close(); S.hotel = null; ir("hotel"); });
+}
+
+// "Nueva": el operador va directo a la novedad; del jefe de servicio hacia arriba elige novedad o tarea.
+function abrirNueva(e) {
+  if (!S.hotel || !alMenos("jefe_servicio")) return;
+  e.preventDefault();
+  const it = (ruta, icono, texto, ayuda) => `<a class="hoja-it" href="#/${ruta}" data-cerrar><svg viewBox="0 0 24 24" aria-hidden="true">${icono}</svg><span>${texto}<br><small class="meta">${ayuda}</small></span></a>`;
+  const d = dialogo(`<div class="hoja-asa" data-cerrar></div><nav aria-label="Nueva">
+    ${it("nueva-novedad", `<path d="M5 4h14v16H5z"/><path d="M8 9h8M8 13h8M8 17h5"/>`, "Novedad", "Contar algo que pasó")}
+    ${it("nueva-tarea", `<path d="M4 6l2 2 4-4M4 14l2 2 4-4"/><path d="M13 7h7M13 15h7"/>`, "Tarea", "Para un área o una persona")}
+  </nav>`);
+  d.classList.add("hoja");
+  d.addEventListener("click", (ev) => { if (ev.target === d) d.close(); });
 }
 
 // ===== Tener en cuenta =====
@@ -822,9 +836,12 @@ async function vTareas(_, params) {
 async function vNuevaTarea(_, params) {
   const novId = params.get("novedad");
   const nov = novId ? await q(sb.from("novedades").select("id, descripcion, lugar, urgencia, para_area_id, para_areas, tipo:tipos_novedad(nombre)").eq("id", novId).maybeSingle()) : null;
+  // Gerente y administrador: cualquier área y persona del hotel. Jefe y líder: sus áreas y su gente.
+  // Operador: su área o él mismo. La base de datos aplica lo mismo.
   const jefe = alMenos("jefe_servicio");
-  const areas = jefe ? S.areas.filter((a) => a.activa) : S.areas.filter((a) => a.id === S.area);
-  const personas = jefe ? S.personas.filter((p) => p.activa) : S.personas.filter((p) => p.id === S.user.id);
+  const areas = S.areas.filter((a) => a.activa && (todoElHotel() || esMia(a.id)));
+  const deMisAreas = (p) => esMia(p.area_id) || p.areas.some(esMia);
+  const personas = S.personas.filter((p) => p.activa && (p.id === S.user.id || (jefe && (todoElHotel() || deMisAreas(p)))));
   const areaInicial = nov?.para_areas?.[0] ?? nov?.para_area_id ?? S.area ?? areas[0]?.id;
 
   app.innerHTML = `<h1>Nueva tarea</h1>
@@ -857,13 +874,19 @@ async function vNuevaTarea(_, params) {
     document.getElementById("sel-persona").hidden = f.a.value !== "persona";
   }));
   f.titulo.focus();
+  // La tarea de una persona queda en un área suya; si no soy gerente, en una que compartimos
+  const areaDePersona = (id) => {
+    const p = S.personas.find((x) => x.id === id);
+    const suyas = [p?.area_id, ...(p?.areas ?? [])].filter(Boolean);
+    return (todoElHotel() ? suyas[0] : suyas.find(esMia)) ?? null;
+  };
   alEnviar(f, async (d) => {
     const a = d.get("a");
     const persona = a === "persona" ? d.get("persona") : null;
     const fila = {
       hotel_id: S.hotel.id, creado_por: S.user.id, titulo: String(d.get("titulo")).trim(),
       descripcion: String(d.get("descripcion") ?? "").trim() || null,
-      area_id: a === "persona" ? (S.personas.find((p) => p.id === persona)?.area_id ?? null) : d.get("area"),
+      area_id: a === "persona" ? areaDePersona(persona) : d.get("area"),
       asignada_a: persona, asignada_por: persona ? S.user.id : null, siguiente_turno: a === "siguiente",
       urgencia: d.get("urgencia"), fecha_limite: d.get("limite") ? new Date(d.get("limite")).toISOString() : null,
       novedad_id: nov?.id ?? null, compartida_grupo: d.get("grupo") === "on",
@@ -1657,6 +1680,7 @@ async function arrancar() {
 
 document.getElementById("btn-cuenta").addEventListener("click", abrirCuenta);
 document.getElementById("btn-mas").addEventListener("click", abrirMas);
+document.querySelector("#menu .nueva").addEventListener("click", abrirNueva);
 document.getElementById("btn-hotel").addEventListener("click", () => { if (S.membresias.length > 1) { S.hotel = null; ir("hotel"); } });
 window.addEventListener("hashchange", enrutar);
 sb.auth.onAuthStateChange((evento) => { if (evento === "SIGNED_OUT" && S.user) { S.user = null; S.hotel = null; ir("entrar"); } });
