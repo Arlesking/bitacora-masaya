@@ -1003,65 +1003,82 @@ async function vAdmin(_, params) {
 function aPersonas(panel, recargar) {
   const roles = ORDEN.filter((r) => r !== "admin" && (S.perfil.es_admin_global || nivel(r) < nivel("lider")));
   const opArea = (sel) => `<option value="">Sin área (todo el hotel)</option>` + S.areas.filter((a) => a.activa).map((a) => `<option value="${a.id}" ${a.id === sel ? "selected" : ""}>${esc(a.nombre)}</option>`).join("");
-  panel.innerHTML = `<div class="acciones" style="margin-top:0"><button class="btn" id="nueva">+ Agregar persona</button></div>
+  panel.innerHTML = `<div class="acciones" style="margin-top:0"><button class="btn" id="nueva">+ Persona nueva</button><button class="btn sec" id="traer">Traer de otro hotel</button></div>
     <div class="tabla-scroll" style="margin-top:14px"><table><thead><tr><th>Nombre</th><th>Rol</th><th>Área</th><th>Estado</th><th></th></tr></thead><tbody>
     ${S.personas.map((p) => `<tr><td>${esc(p.nombre)}<div class="meta">${esc(p.correo)}</div></td><td>${ROL[p.rol]}</td>
       <td>${p.area_id ? esc(areaDe(p.area_id)) : "—"}</td><td>${p.activa ? "Activa" : "Sin acceso"}</td>
       <td>${p.id !== S.user.id && (S.perfil.es_admin_global || nivel(p.rol) < nivel("lider")) ? `<button class="btn sec chico" data-p="${p.id}">Editar</button>` : ""}</td></tr>`).join("")}
     </tbody></table></div>
-    <p class="ayuda">Para dar acceso a alguien que ya trabaja en otro hotel del grupo, agrégalo con el mismo correo: conserva su PIN.</p>`;
+    <p class="ayuda">¿Ya trabaja en otro de tus hoteles? Usa "Traer de otro hotel": conserva su correo y su PIN.</p>`;
 
+  // Persona nueva: si el correo ya tiene usuario, se ofrece darle acceso con su mismo PIN en vez de crear otro
   alClic("#nueva", async () => {
     const pin = pinAleatorio();
-    const d = dialogo(`<form method="dialog" id="f-p"><h2 style="margin-top:0">Agregar persona</h2>
-      <label for="p-correo">Correo</label><input id="p-correo" name="correo" type="email" required>
-      <p class="ayuda" id="p-existe" hidden></p>
+    const d = dialogo(`<form method="dialog"><h2 style="margin-top:0">Persona nueva</h2>
       <label for="p-nombre">Nombre</label><input id="p-nombre" name="nombre" type="text" required>
-      <div id="p-pin-caja"><label for="p-pin">PIN inicial <span class="ayuda">(díselo en persona; puede cambiarlo después)</span></label>
-      <input id="p-pin" name="pin" type="text" inputmode="numeric" maxlength="6" class="pin" value="${pin}" required></div>
+      <label for="p-correo">Correo <span class="ayuda">(con el que entrará)</span></label><input id="p-correo" name="correo" type="email" required>
+      <label for="p-pin">PIN inicial <span class="ayuda">(díselo en persona; puede cambiarlo después)</span></label>
+      <input id="p-pin" name="pin" type="text" inputmode="numeric" maxlength="6" class="pin" value="${pin}" required>
       <label for="p-rol">Rol</label><select id="p-rol" name="rol">${roles.map((r) => `<option value="${r}">${ROL[r]}</option>`).join("")}</select>
       <label for="p-area">Área</label><select id="p-area" name="area">${opArea(null)}</select>
-      <div class="acciones"><button class="btn" type="submit">Agregar</button><button class="btn sec" type="button" data-cerrar>Cancelar</button></div></form>`);
-    // Si el correo ya tiene cuenta (en cualquier hotel), conserva su nombre y su PIN: no se pide otro
-    const $ = (sel) => d.querySelector(sel);
-    let existente = null, buscando = null, buscado = "";
-    const buscar = () => {
-      const correo = $("#p-correo").value.trim().toLowerCase();
-      if (correo === buscado) return buscando;
-      buscado = correo;
-      buscando = (async () => {
-        let r = null;
-        if (/^\S+@\S+\.\S+$/.test(correo)) {
-          const { data } = await sb.rpc("persona_por_correo", { p_hotel: S.hotel.id, p_correo: correo });
-          r = data?.[0] ?? null;
-        }
-        if (correo !== buscado) return;
-        if (existente && !r) $("#p-nombre").value = "";
-        existente = r;
-        $("#p-existe").hidden = !r;
-        $("#p-existe").textContent = !r ? "" : r.en_este_hotel
-          ? "Esta persona ya está en este hotel. Para cambiar su rol, área o PIN, usa Editar en la lista."
-          : "Esta persona ya existe. Se le dará acceso a este hotel y entrará con el mismo PIN que ya usa.";
-        $("#p-nombre").readOnly = !!r;
-        if (r) $("#p-nombre").value = r.nombre;
-        $("#p-pin-caja").hidden = !!r;
-        $("#p-pin").disabled = !!r;
-        d.querySelector("button[type=submit]").disabled = !!r?.en_este_hotel;
-      })();
-      return buscando;
-    };
-    $("#p-correo").addEventListener("change", buscar);
-    $("#p-correo").addEventListener("blur", buscar);
+      <div class="acciones"><button class="btn" type="submit">Crear</button><button class="btn sec" type="button" data-cerrar>Cancelar</button></div></form>`);
     alEnviar(d.querySelector("form"), async (f) => {
-      await buscar();
-      if (existente?.en_este_hotel) throw new Error("Esta persona ya está en este hotel.");
-      if (!existente && !/^\d{6}$/.test(f.get("pin"))) throw new Error("El PIN debe tener 6 dígitos.");
-      const r = await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: f.get("nombre"), correo: f.get("correo"), pin: existente ? undefined : f.get("pin"), rol: f.get("rol"), area_id: f.get("area") || null });
+      const correo = String(f.get("correo")).trim().toLowerCase();
+      const { data } = await sb.rpc("persona_por_correo", { p_hotel: S.hotel.id, p_correo: correo });
+      const ya = data?.[0];
+      if (ya?.en_este_hotel) throw new Error(`${ya.nombre} ya está en este hotel. Para cambiar su rol o área, usa Editar en la lista.`);
+      if (ya && !(await confirmar(`${ya.nombre} ya tiene usuario con ese correo. ¿Darle acceso a este hotel? Entrará con el mismo PIN que ya usa.`, { boton: "Dar acceso" }))) return;
+      if (!ya && !/^\d{6}$/.test(f.get("pin"))) throw new Error("El PIN debe tener 6 dígitos.");
+      await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: ya ? ya.nombre : f.get("nombre"), correo, pin: ya ? undefined : f.get("pin"), rol: f.get("rol"), area_id: f.get("area") || null });
       d.close();
-      if (r.yaExistia) aviso("Listo: ya tiene acceso a este hotel y entra con su PIN de siempre.");
-      else mostrarAcceso(f.get("nombre"), String(f.get("correo")).trim().toLowerCase(), f.get("pin"));
+      if (ya) aviso(`Listo: ${ya.nombre} ya tiene acceso a este hotel y entra con su PIN de siempre.`);
+      else mostrarAcceso(f.get("nombre"), correo, f.get("pin"));
       recargar();
     });
+  }, panel);
+
+  // Traer de otro hotel: se elige de la lista de gente de tus otros hoteles; conserva su correo y su PIN
+  alClic("#traer", async () => {
+    const gente = await q(sb.rpc("personas_de_otros_hoteles", { p_hotel: S.hotel.id }));
+    const d = dialogo(`<div><h2 style="margin-top:0">Traer de otro hotel</h2><div id="t-cuerpo"></div></div>`);
+    const cuerpo = d.querySelector("#t-cuerpo");
+    const lista = (filtro = "") => {
+      const f = filtro.trim().toLowerCase();
+      const vis = gente.filter((g) => !f || g.nombre.toLowerCase().includes(f) || g.correo.includes(f));
+      return vis.map((g) => `<button class="tarjeta" style="width:100%;text-align:left;cursor:pointer" data-g="${g.perfil_id}">
+        <span class="titulo">${esc(g.nombre)}</span><span class="meta" style="display:block">${esc(g.hoteles)} · ${ROL[g.rol]}${g.area ? " · " + esc(g.area) : ""}</span></button>`).join("")
+        || `<p class="meta">Nadie coincide con "${esc(filtro)}".</p>`;
+    };
+    const elegir = (g) => {
+      const area = S.areas.find((a) => a.activa && g.area && a.nombre.toLowerCase() === g.area.toLowerCase());
+      cuerpo.innerHTML = `<form method="dialog"><p class="titulo" style="margin:0">${esc(g.nombre)}</p>
+        <p class="meta" style="margin:4px 0 0">${esc(g.correo)} · trabaja en ${esc(g.hoteles)}</p>
+        <label for="t-rol">Rol en este hotel</label><select id="t-rol" name="rol">${roles.map((r) => `<option value="${r}" ${r === g.rol ? "selected" : ""}>${ROL[r]}</option>`).join("")}</select>
+        <label for="t-area">Área en este hotel</label><select id="t-area" name="area">${opArea(area?.id ?? null)}</select>
+        <p class="ayuda">Entrará con el mismo correo y PIN que ya usa.</p>
+        <div class="acciones"><button class="btn" type="submit">Agregar a este hotel</button><button class="btn sec" type="button" id="t-volver">Volver</button></div></form>`;
+      alClic("#t-volver", async () => pintar(), cuerpo);
+      alEnviar(cuerpo.querySelector("form"), async (f) => {
+        await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: g.nombre, correo: g.correo, rol: f.get("rol"), area_id: f.get("area") || null });
+        d.close(); aviso(`Listo: ${g.nombre} ya tiene acceso a este hotel.`); recargar();
+      });
+    };
+    const pintar = () => {
+      if (!gente.length) {
+        cuerpo.innerHTML = `<p class="meta">No hay nadie de tus otros hoteles que falte aquí. Para alguien que no tiene usuario, usa "Persona nueva".</p>
+          <div class="acciones"><button class="btn sec" type="button" data-cerrar>Cerrar</button></div>`;
+        cuerpo.querySelector("[data-cerrar]").addEventListener("click", () => d.close());
+        return;
+      }
+      cuerpo.innerHTML = `${gente.length > 6 ? `<input type="search" id="t-buscar" placeholder="Buscar por nombre o correo" aria-label="Buscar persona">` : ""}
+        <div id="t-lista" style="display:grid;gap:8px;margin-top:10px">${lista()}</div>
+        <div class="acciones"><button class="btn sec" type="button" data-cerrar>Cancelar</button></div>`;
+      cuerpo.querySelector("[data-cerrar]").addEventListener("click", () => d.close());
+      const conectar = () => alClic("[data-g]", async (b) => elegir(gente.find((g) => g.perfil_id === b.dataset.g)), cuerpo.querySelector("#t-lista"));
+      cuerpo.querySelector("#t-buscar")?.addEventListener("input", (e) => { cuerpo.querySelector("#t-lista").innerHTML = lista(e.target.value); conectar(); });
+      conectar();
+    };
+    pintar();
   }, panel);
 
   alClic("[data-p]", async (b) => {
