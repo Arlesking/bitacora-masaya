@@ -222,7 +222,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .dia { font-size: .8rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--suave); margin: 18px 0 8px; }
 .dia::first-letter { text-transform: uppercase; }
 
-/* Nueva novedad en 3 pasos */
+/* Nueva novedad en 2 pasos */
 .pasos-cab { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .pasos { display: flex; gap: 6px; margin-bottom: 14px; }
 .pasos i { flex: 1; height: 5px; border-radius: 9px; background: var(--borde); }
@@ -234,8 +234,6 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .tipo-b input { position: absolute; opacity: 0; pointer-events: none; }
 .tipo-b:has(input:checked) { border: 2px solid var(--marca); background: var(--marca-claro); }
 .tipo-b:has(input:focus-visible) { outline: 3px solid color-mix(in srgb, var(--marca) 35%, transparent); }
-.lugares { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 6px 0 4px; }
-.lugar-b { padding: 12px 4px; border-radius: 10px; border: 1px solid var(--borde); background: var(--superficie); font-weight: 700; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .resumen-nov { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 12px; align-items: center;
   background: var(--superficie); border: 1px solid var(--borde); border-radius: var(--radio); padding: 10px 12px; }
 

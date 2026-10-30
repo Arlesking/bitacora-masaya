@@ -532,24 +532,18 @@ async function vNovedades(_, params) {
   alClic("#mas", () => aplicar({ n: f.n + 50 }));
 }
 
-// Nueva novedad en 3 pasos: qué pasó (tipo), dónde (lugar) y el detalle.
+// Nueva novedad en 2 pasos: qué pasó (tipo) y el detalle, con el lugar opcional.
 // Urgencia y destino ya vienen puestos; se cambian en el último paso si hace falta.
 async function vNuevaNovedad() {
   const activos = S.tipos.filter((t) => t.activo);
   const enGrupo = S.grupo.length > 1;
-  // Los lugares más usados en el último mes, para elegirlos con un toque
-  const recientes = await q(sb.from("novedades").select("lugar").eq("hotel_id", S.hotel.id).not("lugar", "is", null)
-    .gte("creado_en", new Date(Date.now() - 30 * 864e5).toISOString()).order("creado_en", { ascending: false }).limit(300));
-  const usos = new Map();
-  for (const { lugar } of recientes) { const l = lugar.trim(); if (l) usos.set(l, (usos.get(l) ?? 0) + 1); }
-  const frecuentes = [...usos].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([l]) => l);
 
   app.innerHTML = `<form id="f-nov" class="pasos-form">
       <div class="pasos-cab">
         <button type="button" class="btn sec chico" id="atras">← Atrás</button>
-        <span class="meta" id="paso-txt">Paso 1 de 3</span>
+        <span class="meta" id="paso-txt">Paso 1 de 2</span>
       </div>
-      <div class="pasos" aria-hidden="true"><i class="on"></i><i></i><i></i></div>
+      <div class="pasos" aria-hidden="true"><i class="on"></i><i></i></div>
 
       <section data-paso="1">
         <h1>¿Qué pasó?</h1>
@@ -558,18 +552,10 @@ async function vNuevaNovedad() {
       </section>
 
       <section data-paso="2" hidden>
-        <h1>¿Dónde?</h1>
-        ${frecuentes.length ? `<p class="meta">Los más usados</p>
-        <div class="lugares">${frecuentes.map((l) => `<button type="button" class="lugar-b" data-lugar="${esc(l)}">${esc(lugarTexto(l))}</button>`).join("")}</div>` : ""}
-        <label for="lugar">${frecuentes.length ? "Otro lugar o habitación" : "Habitación o lugar"}</label>
-        <input id="lugar" name="lugar" type="text" maxlength="80" placeholder="Ej: 204, piscina, cocina" enterkeyhint="next">
-        <div class="acciones"><button type="button" class="btn ancho" id="seguir-lugar">Seguir</button>
-          <button type="button" class="btn sec ancho" id="sin-lugar">No aplica un lugar</button></div>
-      </section>
-
-      <section data-paso="3" hidden>
         <h1>Cuéntalo</h1>
         <div class="resumen-nov" id="resumen"></div>
+        <label for="lugar">Habitación o lugar <span class="ayuda">(opcional)</span></label>
+        <input id="lugar" name="lugar" type="text" maxlength="80" placeholder="Ej: 204, piscina, cocina">
         <label for="descripcion">¿Qué pasó? <span class="ayuda">(puedes dictar con el micrófono del teclado)</span></label>
         <textarea id="descripcion" name="descripcion" required maxlength="4000"></textarea>
         <label>Urgencia</label>
@@ -594,18 +580,17 @@ async function vNuevaNovedad() {
     paso = n;
     f.querySelectorAll("[data-paso]").forEach((s) => (s.hidden = Number(s.dataset.paso) !== n));
     f.querySelectorAll(".pasos i").forEach((b, i) => b.classList.toggle("on", i < n));
-    document.getElementById("paso-txt").textContent = `Paso ${n} de 3`;
+    document.getElementById("paso-txt").textContent = `Paso ${n} de 2`;
     document.getElementById("atras").textContent = n === 1 ? "Cancelar" : "← Atrás";
-    if (n === 3) {
+    if (n === 2) {
       const t = activos.find((x) => x.id === f.tipo.value);
       const r = document.getElementById("resumen");
       r.style.setProperty("--tipo", t?.color ?? "");
-      r.innerHTML = `${iconoTipo(t?.nombre)}<div><strong>${esc(t?.nombre ?? "")}</strong>
-        <div class="meta">${f.lugar.value.trim() ? esc(lugarTexto(f.lugar.value.trim())) : "Sin lugar"}</div></div>
+      r.innerHTML = `${iconoTipo(t?.nombre)}<div><strong>${esc(t?.nombre ?? "")}</strong></div>
         <button type="button" class="btn sec chico" data-volver="1">Cambiar</button>`;
       document.querySelector("[data-volver]").addEventListener("click", () => mostrar(1));
       f.descripcion.focus();
-    } else if (n === 2 && !frecuentes.length) f.lugar.focus();
+    }
     window.scrollTo(0, 0);
   };
   document.getElementById("atras").addEventListener("click", () => (paso === 1 ? ir("inicio") : mostrar(paso - 1)));
@@ -615,10 +600,6 @@ async function vNuevaNovedad() {
     if (u) u.checked = true;
     mostrar(2);
   }));
-  f.querySelectorAll("[data-lugar]").forEach((b) => b.addEventListener("click", () => { f.lugar.value = b.dataset.lugar; mostrar(3); }));
-  document.getElementById("seguir-lugar").addEventListener("click", () => mostrar(3));
-  document.getElementById("sin-lugar").addEventListener("click", () => { f.lugar.value = ""; mostrar(3); });
-  f.lugar.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); mostrar(3); } });
   f.querySelectorAll("input[name=para]").forEach((r) => r.addEventListener("change", () => {
     document.getElementById("para-area").hidden = f.para.value !== "area";
     document.getElementById("para-persona").hidden = f.para.value !== "persona";
