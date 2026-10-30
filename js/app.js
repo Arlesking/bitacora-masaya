@@ -1,8 +1,8 @@
 import { sb } from "./sb.js";
 
 // ===== Utilidades =====
-const ORDEN = ["operador", "jefe_servicio", "lider", "admin"];
-const ROL = { operador: "Operador", jefe_servicio: "Jefe de servicio", lider: "Líder", admin: "Administrador" };
+const ORDEN = ["operador", "jefe_servicio", "lider", "gerente", "admin"];
+const ROL = { operador: "Operador", jefe_servicio: "Jefe de servicio", lider: "Líder", gerente: "Gerente", admin: "Administrador" };
 const URG = { baja: "Baja", media: "Media", alta: "Alta", critica: "Crítica" };
 const EST_N = { abierta: "Abierta", seguimiento: "En seguimiento", cerrada: "Cerrada", anulada: "Anulada" };
 const EST_T = { pendiente: "Pendiente", en_curso: "En curso", hecha: "Hecha", cancelada: "Cancelada" };
@@ -19,6 +19,17 @@ function guardar(k, v) { try { v === null ? localStorage.removeItem(k) : localSt
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const nivel = (rol) => ORDEN.indexOf(rol);
 const alMenos = (min) => nivel(S.rol) >= nivel(min);
+const esAdmin = () => S.rol === "admin";
+// Gerente y administrador manejan todo el hotel; el resto, solo sus áreas (la base de datos aplica lo mismo)
+const todoElHotel = () => alMenos("gerente");
+const esMia = (areaId) => !!areaId && S.misAreas.includes(areaId);
+const rolEnArea = (areaId) => (todoElHotel() || esMia(areaId) ? S.rol : null);
+// Áreas cuyos turnos y checklists configuro: las del líder, o todas si soy administrador
+const areasQueLidero = () => S.areas.filter((a) => a.activa && (esAdmin() || (S.rol === "lider" && esMia(a.id))));
+// Áreas a las que puedo mandar avisos: todas (gerente) o las mías si soy jefe o líder
+const areasParaAvisar = () => S.areas.filter((a) => a.activa && (todoElHotel() || (alMenos("jefe_servicio") && esMia(a.id))));
+const puedoAvisar = (areas) => (areas?.length ? todoElHotel() || (alMenos("jefe_servicio") && areas.every(esMia)) : todoElHotel());
+const areasTexto = (ids) => (ids ?? []).map((id) => areaDe(id)).join(", ");
 
 function aviso(msg, error = false) {
   const el = document.getElementById("aviso");
@@ -107,14 +118,14 @@ function alEnviar(form, fn) {
 
 // ===== Estado =====
 const S = {
-  user: null, perfil: null, membresias: [], hotel: null, rol: null, area: null,
+  user: null, perfil: null, membresias: [], hotel: null, rol: null, area: null, misAreas: [],
   areas: [], tipos: [], personas: [], turnos: [], grupo: [], modulos: [],
 };
-// Un módulo se ve si está encendido en el hotel y la persona es líder o de un área que lo usa.
+// Un módulo se ve si está encendido en el hotel y la persona es gerente o de un área que lo usa.
 // La base de datos aplica la misma regla, así que ocultarlo aquí es solo para el menú.
 function usaModulo(modulo) {
   const m = S.modulos.find((x) => x.modulo === modulo);
-  return !!m?.activo && (alMenos("lider") || (!!S.area && m.areas.includes(S.area)));
+  return !!m?.activo && (todoElHotel() || S.misAreas.some((a) => m.areas.includes(a)));
 }
 const areasDelModulo = (modulo) => {
   const m = S.modulos.find((x) => x.modulo === modulo);
@@ -145,16 +156,17 @@ async function entrarAlHotel(id) {
   const m = S.membresias.find((x) => x.hotel_id === id);
   if (!m) return false;
   S.hotel = m.hotel; S.rol = m.rol; S.area = m.area_id ?? null;
+  S.misAreas = m.areas?.length ? m.areas : S.area ? [S.area] : [];
   try { localStorage.setItem("hotel", id); } catch { /* sin almacenamiento */ }
   const [areas, tipos, personas, grupo, modulos] = await Promise.all([
     q(sb.from("areas").select("*").eq("hotel_id", id).order("nombre")),
     q(sb.from("tipos_novedad").select("*").eq("hotel_id", id).order("nombre")),
-    q(sb.from("membresias").select("id, rol, area_id, activa, perfil:perfiles(id, nombre, correo)").eq("hotel_id", id)),
+    q(sb.from("membresias").select("id, rol, area_id, areas, activa, perfil:perfiles(id, nombre, correo)").eq("hotel_id", id)),
     q(sb.rpc("hoteles_del_grupo", { p_hotel: id })),
     q(sb.from("modulos_hotel").select("*").eq("hotel_id", id)),
   ]);
   S.areas = areas; S.tipos = tipos; S.grupo = grupo ?? []; S.modulos = modulos;
-  S.personas = personas.filter((p) => p.perfil).map((p) => ({ ...p.perfil, rol: p.rol, area_id: p.area_id, activa: p.activa, membresia: p.id }))
+  S.personas = personas.filter((p) => p.perfil).map((p) => ({ ...p.perfil, rol: p.rol, area_id: p.area_id, areas: p.areas ?? [], activa: p.activa, membresia: p.id }))
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
   S.turnos = areas.length ? await q(sb.from("turnos").select("*").in("area_id", areas.map((a) => a.id)).order("hora_inicio")) : [];
   pintarBarra();
@@ -182,7 +194,7 @@ function pintarBarra() {
   document.getElementById("barra").hidden = false;
   document.getElementById("menu").hidden = false;
   document.getElementById("hotel-nombre").textContent = S.hotel.nombre + (S.hotel.es_prueba ? " (pruebas)" : "");
-  document.getElementById("hotel-rol").textContent = `${S.perfil.nombre} · ${ROL[S.rol]}${S.area ? " · " + areaDe(S.area) : ""}`;
+  document.getElementById("hotel-rol").textContent = `${S.perfil.nombre} · ${ROL[S.rol]}${S.misAreas.length && !todoElHotel() ? " · " + areasTexto(S.misAreas) : ""}`;
 }
 function ocultarBarra() {
   document.getElementById("barra").hidden = true;
@@ -395,8 +407,8 @@ function abrirMas() {
   const it = (ruta, icono, texto) => `<a class="hoja-it" href="#/${ruta}" data-cerrar><svg viewBox="0 0 24 24" aria-hidden="true">${icono}</svg>${texto}</a>`;
   const d = dialogo(`<div class="hoja-asa" data-cerrar></div><nav aria-label="Más opciones">
     ${usaModulo("checklist") ? it("checklist", `<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8l1.5 1.5L12 7M8 14l1.5 1.5L12 13M14 8.5h3M14 14.5h3"/>`, "Checklist") : ""}
-    ${alMenos("lider") ? it("log", `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>`, "Registro de actividad") : ""}
-    ${alMenos("lider") ? it("admin", `<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>`, "Ajustes") : ""}
+    ${todoElHotel() ? it("log", `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>`, "Registro de actividad") : ""}
+    ${pestanasAjustes().length ? it("admin", `<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>`, "Ajustes") : ""}
     <button class="hoja-it" type="button" id="mas-cuenta"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Mi cuenta y PIN</button>
     ${S.membresias.length > 1 ? `<button class="hoja-it" type="button" id="mas-hotel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/></svg>Cambiar de hotel</button>` : ""}
   </nav>`);
@@ -407,7 +419,8 @@ function abrirMas() {
 }
 
 // ===== Tener en cuenta =====
-// Avisos cortos del hotel con fecha de fin. Todos los ven; de Jefe de servicio en adelante los manejan.
+// Avisos cortos con fecha de fin, para todo el hotel o para ciertas áreas.
+// El gerente avisa a todo el hotel o a cualquier área; el jefe y el líder, solo a sus áreas.
 // "hasta" es un día: el aviso se ve hasta que termina ese día y luego desaparece solo.
 const diaLocal = (d = new Date()) => new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const masDias = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return diaLocal(d); };
@@ -421,19 +434,29 @@ const avisosVigentes = () => q(sb.from("avisos").select("*").eq("hotel_id", S.ho
   .gte("hasta", diaLocal()).order("hasta").order("creado_en"));
 
 function tarjetaAviso(a) {
-  const puede = alMenos("jefe_servicio");
+  const puede = puedoAvisar(a.areas);
   return `<${puede ? `button type="button" data-aviso="${a.id}"` : "div"} class="aviso-t">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3z"/></svg>
-    <span><span class="aviso-txt">${esc(a.texto)}</span><small>${hastaTexto(a.hasta)}</small></span></${puede ? "button" : "div"}>`;
+    <span><span class="aviso-txt">${esc(a.texto)}</span><small>${hastaTexto(a.hasta)}${a.areas?.length ? " · Para " + esc(areasTexto(a.areas)) : ""}</small></span></${puede ? "button" : "div"}>`;
 }
 
 function abrirAviso(a, alGuardar) {
   const opciones = [["Hoy", diaLocal()], ["Mañana", masDias(1)], ["Esta semana", masDias((7 - new Date().getDay()) % 7)]];
   const marcada = a ? opciones.find(([, f]) => f === a.hasta)?.[1] ?? "otra" : null;
+  // Para quién: el gerente empieza en "Todo el hotel"; el jefe o líder, en todas sus áreas
+  const posibles = areasParaAvisar();
+  let para = a ? (a.areas ?? []) : todoElHotel() ? [] : posibles.map((x) => x.id);
+  const paraHtml = todoElHotel() || posibles.length > 1
+    ? `<label>¿Para quién?</label><div class="fichas envolver" role="group" aria-label="Para quién">
+        ${todoElHotel() ? `<button type="button" class="ficha ${para.length ? "" : "activa"}" data-para="">Todo el hotel</button>` : ""}
+        ${posibles.map((x) => `<button type="button" class="ficha ${para.includes(x.id) ? "activa" : ""}" data-para="${x.id}">${esc(x.nombre)}</button>`).join("")}
+      </div>`
+    : `<p class="meta">Para: <strong>${esc(areasTexto(para))}</strong></p>`;
   const d = dialogo(`<form id="f-aviso">
       <h2 style="margin-top:0">${a ? "Cambiar aviso" : "Nuevo aviso"}</h2>
       <label for="aviso-texto">¿Qué hay que tener en cuenta?</label>
       <textarea id="aviso-texto" name="texto" maxlength="300" required placeholder="Ej: Piscina pequeña cerrada por arreglo">${esc(a?.texto ?? "")}</textarea>
+      ${paraHtml}
       <label>¿Hasta cuándo?</label>
       <div class="fichas envolver" role="group" aria-label="Hasta cuándo">
         ${opciones.map(([t, f]) => `<button type="button" class="ficha ${marcada === f ? "activa" : ""}" data-hasta="${f}">${t}</button>`).join("")}
@@ -453,14 +476,25 @@ function abrirAviso(a, alGuardar) {
     if (!fecha.hidden) fecha.focus();
   }));
   fecha.addEventListener("change", () => (hasta = fecha.value || null));
+  // Tocar un área la suma o la quita; "Todo el hotel" quita las áreas, y sin áreas vuelve a "Todo el hotel"
+  const fichasPara = [...d.querySelectorAll("[data-para]")];
+  const pintarPara = () => fichasPara.forEach((b) => b.classList.toggle("activa", b.dataset.para ? para.includes(b.dataset.para) : !para.length));
+  fichasPara.forEach((b) => b.addEventListener("click", () => {
+    const id = b.dataset.para;
+    if (!id) para = [];
+    else para = para.includes(id) ? para.filter((x) => x !== id) : [...para, id];
+    if (!para.length && !todoElHotel()) para = [id];   // jefe y líder siempre avisan al menos a un área
+    pintarPara();
+  }));
   alEnviar(d.querySelector("form"), async (f) => {
     const texto = String(f.get("texto")).trim();
     if (!texto) throw new Error("Escribe el aviso.");
     if (!hasta) throw new Error("Elige hasta cuándo.");
     if (hasta < diaLocal()) throw new Error("La fecha ya pasó.");
-    if (a) await q(sb.from("avisos").update({ texto, hasta }).eq("id", a.id));
-    else await q(sb.from("avisos").insert({ hotel_id: S.hotel.id, texto, hasta, autor_id: S.user.id }));
-    d.close(); aviso(a ? "Aviso cambiado." : "Aviso guardado. Ya lo ve todo el hotel."); alGuardar();
+    const areas = para.length ? para : null;
+    if (a) await q(sb.from("avisos").update({ texto, hasta, areas }).eq("id", a.id));
+    else await q(sb.from("avisos").insert({ hotel_id: S.hotel.id, texto, hasta, areas, autor_id: S.user.id }));
+    d.close(); aviso(a ? "Aviso cambiado." : `Aviso guardado. Ya lo ve ${areas ? "la gente de " + areasTexto(areas) : "todo el hotel"}.`); alGuardar();
   });
   alClic("#aviso-quitar", async () => {
     await q(sb.from("avisos").update({ quitado_en: new Date().toISOString(), quitado_por: S.user.id }).eq("id", a.id));
@@ -474,8 +508,8 @@ async function vInicio() {
     avisosVigentes().catch(() => []),
     novedadesSinLeer(),
     misTareas(),
-    S.area || alMenos("lider")
-      ? q((S.area ? sb.from("tareas").select(SEL_TAR).eq("area_id", S.area) : sb.from("tareas").select(SEL_TAR).eq("hotel_id", S.hotel.id))
+    S.misAreas.length || todoElHotel()
+      ? q((todoElHotel() ? sb.from("tareas").select(SEL_TAR).eq("hotel_id", S.hotel.id) : sb.from("tareas").select(SEL_TAR).in("area_id", S.misAreas))
         .is("asignada_a", null).eq("estado", "pendiente").order("creado_en", { ascending: false }).limit(50))
       : Promise.resolve([]),
     q(visibles(sb.from("novedades").select(SEL_NOV)).in("estado", ["abierta", "seguimiento"]).in("urgencia", URGENTE)
@@ -499,8 +533,8 @@ async function vInicio() {
       <span>${turno ? `Turno <strong>${esc(turno.nombre)}</strong> · ${hora(turno.hora_inicio)} a ${hora(turno.hora_fin)}` : "Checklist del turno"}</span>
       ${total ? `<a href="#/checklist" class="progreso" aria-label="Checklist: ${hechos} de ${total}">${hechos}/${total}<span class="barra-prog"><i style="width:${Math.round(hechos / total * 100)}%"></i></span></a>` : ""}
     </div>` : ""}
-    ${avisos.length || alMenos("jefe_servicio") ? `<div class="fila entre"><h2>Tener en cuenta</h2>
-      ${alMenos("jefe_servicio") ? `<button class="btn sec chico" id="aviso-nuevo">+ Agregar</button>` : ""}</div>
+    ${avisos.length || areasParaAvisar().length ? `<div class="fila entre"><h2>Tener en cuenta</h2>
+      ${areasParaAvisar().length ? `<button class="btn sec chico" id="aviso-nuevo">+ Agregar</button>` : ""}</div>
       ${avisos.map(tarjetaAviso).join("") || `<p class="vacio chico">Nada por ahora. Agrega lo que el equipo deba recordar por unos días.</p>`}` : ""}
     <div class="contadores">
       <button type="button" class="contador ${sinLeer.length ? "ambar" : ""}" data-ir="sec-leer"><b>${sinLeer.length}</b><span>Por leer</span></button>
@@ -513,7 +547,7 @@ async function vInicio() {
     ${alMenos("jefe_servicio") && urgentesLeidas.length ? `<h2>Urgentes abiertas</h2>${urgentesLeidas.map((n) => tarjetaNovedad(n)).join("")}` : ""}
     <h2 id="sec-tareas">Mis tareas (${mias.length})</h2>
     ${mias.length ? mias.map(tarjetaTarea).join("") : `<p class="vacio">No tienes tareas pendientes.</p>`}
-    ${S.area || alMenos("lider") ? `<h2>${S.area ? "Bandeja de " + esc(areaDe(S.area)) : "Tareas sin asignar"} (${bandeja.length})</h2>
+    ${S.misAreas.length || todoElHotel() ? `<h2>${todoElHotel() ? "Tareas sin asignar" : "Bandeja de " + esc(areasTexto(S.misAreas))} (${bandeja.length})</h2>
       ${bandeja.length ? bandeja.map(tarjetaTarea).join("") : `<p class="vacio">No hay tareas esperando.</p>`}` : ""}`;
 
   app.querySelectorAll("[data-ir]").forEach((b) => b.addEventListener("click", () =>
@@ -533,7 +567,7 @@ async function vInicio() {
 const VISTAS = {
   abiertas: { nombre: "Abiertas", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]) },
   urgentes: { nombre: "Urgentes", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]).in("urgencia", URGENTE) },
-  area: { nombre: "Mi área", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]).contains("para_areas", [S.area]), solo: () => !!S.area },
+  area: { nombre: "Mi área", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]).overlaps("para_areas", S.misAreas), solo: () => !!S.misAreas.length && !todoElHotel() },
   hoy: { nombre: "Hoy", aplicar: (c) => c.gte("creado_en", new Date(new Date().setHours(0, 0, 0, 0)).toISOString()).neq("estado", "anulada") },
   todas: { nombre: "Todas", aplicar: (c) => c },
 };
@@ -548,6 +582,7 @@ function diaDe(ts) {
 }
 
 async function vNovedades(_, params) {
+  VISTAS.area.nombre = S.misAreas.length > 1 ? "Mis áreas" : "Mi área";
   const vistas = Object.entries(VISTAS).filter(([, v]) => !v.solo || v.solo());
   const f = {
     ver: VISTAS[params.get("ver")] ? params.get("ver") : "abiertas", tipo: params.get("tipo") ?? "", area: params.get("area") ?? "",
@@ -766,14 +801,14 @@ async function vTareas(_, params) {
   const estado = params.get("estado") ?? "activas";
   let c = visibles(sb.from("tareas").select(SEL_TAR)).order("creado_en", { ascending: false }).limit(100);
   if (tab === "mias") c = c.eq("asignada_a", S.user.id);
-  else if (tab === "area") c = S.area ? c.eq("area_id", S.area) : c.eq("hotel_id", S.hotel.id).is("asignada_a", null);
+  else if (tab === "area") c = S.misAreas.length && !todoElHotel() ? c.in("area_id", S.misAreas) : c.eq("hotel_id", S.hotel.id).is("asignada_a", null);
   else if (tab === "creadas") c = c.eq("creado_por", S.user.id);
   if (estado === "activas") c = c.in("estado", ["pendiente", "en_curso"]);
   else if (estado !== "todas") c = c.eq("estado", estado);
   const tareas = soloVisibles(await q(c));
   tareas.sort((a, b) => (vencida(b) - vencida(a)) || ((a.fecha_limite ?? "9") < (b.fecha_limite ?? "9") ? -1 : 1));
 
-  const pest = [["mias", "Mías"], ["area", S.area ? areaDe(S.area) : "Sin asignar"], ["creadas", "Creadas por mí"], ...(alMenos("jefe_servicio") ? [["todas", "Todas"]] : [])];
+  const pest = [["mias", "Mías"], ["area", todoElHotel() || !S.misAreas.length ? "Sin asignar" : S.misAreas.length > 1 ? "Mis áreas" : areaDe(S.misAreas[0])], ["creadas", "Creadas por mí"], ...(alMenos("jefe_servicio") ? [["todas", "Todas"]] : [])];
   const enlace = (v, e) => `#/tareas?ver=${v}&estado=${e}`;
   app.innerHTML = `<div class="fila entre"><h1>Tareas</h1><a class="btn chico" href="#/nueva-tarea">+ Tarea</a></div>
     <nav class="pestanas">${pest.map(([k, v]) => `<a href="${enlace(k, estado)}" class="${k === tab ? "activo" : ""}">${esc(v)}</a>`).join("")}</nav>
@@ -847,12 +882,13 @@ async function vTarea([id]) {
   ]);
   if (!t) throw new Error("Esta tarea no existe o no tienes acceso a ella.");
   const propia = t.hotel_id === S.hotel.id;
-  const jefe = propia && alMenos("jefe_servicio");
+  // Asigna y cancela el jefe o líder del área de la tarea, o el gerente
+  const jefe = propia && nivel(rolEnArea(t.area_id)) >= nivel("jefe_servicio");
   const mia = t.asignada_a === S.user.id;
   const abierta = ["pendiente", "en_curso"].includes(t.estado);
-  const puedeTomar = propia && abierta && !t.asignada_a && (jefe || (t.area_id && t.area_id === S.area));
+  const puedeTomar = propia && abierta && !t.asignada_a && (jefe || esMia(t.area_id));
   const puedeMover = propia && (jefe || mia || t.creado_por === S.user.id);
-  const candidatos = S.personas.filter((p) => p.activa && (!t.area_id || p.area_id === t.area_id || nivel(p.rol) >= nivel("lider")));
+  const candidatos = S.personas.filter((p) => p.activa && (!t.area_id || p.area_id === t.area_id || p.areas.includes(t.area_id) || nivel(p.rol) >= nivel("gerente")));
 
   app.innerHTML = `<p><a href="#/tareas">← Tareas</a></p>
     <div class="tarjeta">
@@ -955,7 +991,7 @@ async function abrirRegistro(p, fecha) {
 
 async function vChecklist(_, params) {
   if (!usaModulo("checklist")) throw new Error("El checklist no está activo para tu área.");
-  const areas = alMenos("lider") ? areasDelModulo("checklist") : S.areas.filter((a) => a.id === S.area);
+  const areas = areasDelModulo("checklist").filter((a) => todoElHotel() || esMia(a.id));
   const areaId = areas.some((a) => a.id === params.get("area")) ? params.get("area") : (areas.find((a) => a.id === S.area) ?? areas[0])?.id;
   const ver = params.get("ver") ?? "turno";
   const enlace = (extra = {}) => "#/checklist?" + new URLSearchParams({ area: areaId ?? "", ver, ...extra });
@@ -994,7 +1030,7 @@ async function clTurno(cl, areaId) {
   };
   cl.innerHTML = `<p class="meta">${turno ? "Turno <strong>" + esc(turno.nombre) + "</strong> · " : ""}${esc(dia(f))}</p>
     ${listas.length ? listas.map(tarjeta).join("")
-      : `<p class="vacio">${alMenos("lider") ? "No hay listas para este turno. Créalas en Ajustes → Checklists." : "Tu líder aún no ha creado listas para este turno."}</p>`}`;
+      : `<p class="vacio">${areasQueLidero().some((a) => a.id === areaId) ? "No hay listas para este turno. Créalas en Ajustes → Checklists." : "El líder del área aún no ha creado listas para este turno."}</p>`}`;
 
   cl.querySelectorAll("[data-item]").forEach((cb) => cb.addEventListener("change", async () => {
     const caja = cb.closest("[data-lista]");
@@ -1051,19 +1087,29 @@ async function clRegistro(cl, id, enlace) {
     <p class="ayuda">Los checklists de días anteriores quedan como historial y ya no se pueden cambiar.</p>`;
 }
 
-// ===== Ajustes (líder y administrador) =====
-async function vAdmin(_, params) {
-  if (!alMenos("lider")) throw new Error("Esta sección es solo para líderes.");
-  const tab = params.get("ver") ?? "personas";
-  const pest = [["personas", "Personas"], ["areas", "Áreas"], ["turnos", "Turnos"], ["tipos", "Tipos de novedad"],
-    ...(usaModulo("checklist") ? [["checklists", "Checklists"]] : []),
+// ===== Ajustes =====
+// Gerente: personas. Líder: turnos y checklists de sus áreas. Administrador: todo.
+function pestanasAjustes() {
+  const lidera = areasQueLidero().length > 0;
+  return [
+    ...(todoElHotel() ? [["personas", "Personas"]] : []),
+    ...(esAdmin() ? [["areas", "Áreas"]] : []),
+    ...(lidera ? [["turnos", "Turnos"]] : []),
+    ...(esAdmin() ? [["tipos", "Tipos de novedad"]] : []),
+    ...(lidera && usaModulo("checklist") ? [["checklists", "Checklists"]] : []),
     ...(S.perfil.es_admin_global ? [["todas", "Todas las personas"], ["modulos", "Módulos"], ["hoteles", "Hoteles"]] : [])];
+}
+
+async function vAdmin(_, params) {
+  const pest = pestanasAjustes();
+  if (!pest.length) throw new Error("Esta sección es solo para gerentes, líderes y administradores.");
+  const tab = pest.some(([k]) => k === params.get("ver")) ? params.get("ver") : pest[0][0];
   const hotelesLider = S.membresias.filter((m) => nivel(m.rol) >= nivel("lider"));
   app.innerHTML = `<h1>Ajustes</h1>
     ${hotelesLider.length > 1 ? `<label for="ajuste-hotel">Hotel que estás configurando</label>
       <select id="ajuste-hotel">${hotelesLider.map((m) => `<option value="${m.hotel_id}" ${m.hotel_id === S.hotel.id ? "selected" : ""}>${esc(m.hotel.nombre)}${m.hotel.es_prueba ? " (pruebas)" : ""}</option>`).join("")}</select>`
       : `<p class="meta">Hotel: <strong>${esc(S.hotel.nombre)}</strong></p>`}
-    <p class="ayuda">Personas, áreas, turnos y tipos son propios de cada hotel.</p>
+    <p class="ayuda">${esAdmin() ? "Personas, áreas, turnos y tipos son propios de cada hotel." : todoElHotel() ? "Como gerente agregas y cambias a las personas de tu hotel." : "Como líder configuras los turnos y checklists de " + esc(areasTexto(S.misAreas)) + "."}</p>
     <nav class="pestanas">${pest.map(([k, v]) => `<a href="#/admin?ver=${k}" class="${k === tab ? "activo" : ""}">${v}</a>`).join("")}</nav>
     <div id="panel"></div>`;
   const panel = document.getElementById("panel");
@@ -1073,20 +1119,56 @@ async function vAdmin(_, params) {
     vAdmin(_, params);
   });
   const recargar = async () => { await entrarAlHotel(S.hotel.id); vAdmin(_, params); };
-  ({ personas: aPersonas, areas: aAreas, turnos: aTurnos, tipos: aTipos, checklists: aChecklists, modulos: aModulos, hoteles: aHoteles, todas: aTodas }[tab] ?? aPersonas)(panel, recargar);
+  ({ personas: aPersonas, areas: aAreas, turnos: aTurnos, tipos: aTipos, checklists: aChecklists, modulos: aModulos, hoteles: aHoteles, todas: aTodas }[tab])(panel, recargar);
 }
+
+// Rol y área: operador y jefe tienen una área; el líder, una o varias; el gerente maneja todo el hotel.
+// Devuelve el HTML y, con conectarRolArea(), una función que lee lo elegido.
+function camposRolArea(pre, roles, p = {}) {
+  const activas = S.areas.filter((a) => a.activa);
+  const areas = p.areas?.length ? p.areas : p.area_id ? [p.area_id] : [];
+  return `<label for="${pre}-rol">Rol</label><select id="${pre}-rol">${roles.map((r) => `<option value="${r}" ${r === p.rol ? "selected" : ""}>${ROL[r]}</option>`).join("")}</select>
+    <div data-una><label for="${pre}-area">Área</label><select id="${pre}-area"><option value="">Sin área (todo el hotel)</option>
+      ${activas.map((a) => `<option value="${a.id}" ${a.id === p.area_id ? "selected" : ""}>${esc(a.nombre)}</option>`).join("")}</select></div>
+    <div data-varias><label>Áreas que lidera <span class="ayuda">(toca una o varias)</span></label><div class="opciones">
+      ${activas.map((a) => `<label><input type="checkbox" data-area-lider value="${a.id}" ${areas.includes(a.id) ? "checked" : ""}><span>${esc(a.nombre)}</span></label>`).join("")}</div>
+      <p class="ayuda">Ve lo de estas áreas, les manda avisos y arma sus turnos y checklists.</p></div>
+    <p class="ayuda" data-hotel>Maneja todo el hotel: avisos para todos, agrega personas y ve el registro. No cambia los ajustes.</p>`;
+}
+function conectarRolArea(raiz, pre) {
+  const rol = raiz.querySelector(`#${pre}-rol`), una = raiz.querySelector(`#${pre}-area`);
+  const cajas = [...raiz.querySelectorAll("[data-area-lider]")];
+  const pintar = () => {
+    const r = rol.value;
+    raiz.querySelector("[data-una]").hidden = r === "lider" || nivel(r) >= nivel("gerente");
+    raiz.querySelector("[data-varias]").hidden = r !== "lider";
+    raiz.querySelector("[data-hotel]").hidden = nivel(r) < nivel("gerente");
+    // Al pasar a líder se marca el área que ya tenía
+    if (r === "lider" && !cajas.some((c) => c.checked) && una.value) cajas.find((c) => c.value === una.value).checked = true;
+  };
+  rol.addEventListener("change", pintar);
+  pintar();
+  return () => {
+    const r = rol.value, areas = cajas.filter((c) => c.checked).map((c) => c.value);
+    if (r === "lider" && !areas.length) throw new Error("Elige al menos un área para el líder.");
+    if (r === "lider") return { rol: r, area_id: areas[0], areas };
+    if (nivel(r) >= nivel("gerente")) return { rol: r, area_id: null, areas: [] };
+    return { rol: r, area_id: una.value || null, areas: una.value ? [una.value] : [] };
+  };
+}
+const areaPersona = (p) => (nivel(p.rol) >= nivel("gerente") ? "Todo el hotel" : p.rol === "lider" && p.areas.length ? areasTexto(p.areas) : p.area_id ? areaDe(p.area_id) : "—");
 
 async function aPersonas(panel, recargar) {
   // Una persona tiene un solo correo y PIN para todos sus hoteles: se muestra dónde más trabaja
   const { data: enOtros } = await sb.rpc("otros_hoteles_de_personas", { p_hotel: S.hotel.id });
   const otros = Object.fromEntries((enOtros ?? []).map((o) => [o.perfil_id, o.hoteles]));
-  const roles = ORDEN.filter((r) => r !== "admin" && (S.perfil.es_admin_global || nivel(r) < nivel("lider")));
-  const opArea = (sel) => `<option value="">Sin área (todo el hotel)</option>` + S.areas.filter((a) => a.activa).map((a) => `<option value="${a.id}" ${a.id === sel ? "selected" : ""}>${esc(a.nombre)}</option>`).join("");
+  // El gerente agrega hasta líderes; a los gerentes los crea el administrador
+  const roles = ORDEN.filter((r) => r !== "admin" && (S.perfil.es_admin_global || nivel(r) < nivel("gerente")));
   panel.innerHTML = `<div class="acciones" style="margin-top:0"><button class="btn" id="nueva">+ Persona nueva</button><button class="btn sec" id="traer">Traer de otro hotel</button></div>
     <div class="tabla-scroll" style="margin-top:14px"><table><thead><tr><th>Nombre</th><th>Rol</th><th>Área</th><th>Estado</th><th></th></tr></thead><tbody>
     ${S.personas.map((p) => `<tr><td>${esc(p.nombre)}<div class="meta">${esc(p.correo)}</div>${otros[p.id] ? `<div class="meta">También en ${esc(otros[p.id])}</div>` : ""}</td><td>${ROL[p.rol]}</td>
-      <td>${p.area_id ? esc(areaDe(p.area_id)) : "—"}</td><td>${p.activa ? "Activa" : "Sin acceso"}</td>
-      <td>${p.id !== S.user.id && (S.perfil.es_admin_global || nivel(p.rol) < nivel("lider")) ? `<button class="btn sec chico" data-p="${p.id}">Editar</button>` : ""}</td></tr>`).join("")}
+      <td>${esc(areaPersona(p))}</td><td>${p.activa ? "Activa" : "Sin acceso"}</td>
+      <td>${p.id !== S.user.id && (S.perfil.es_admin_global || nivel(p.rol) < nivel("gerente")) ? `<button class="btn sec chico" data-p="${p.id}">Editar</button>` : ""}</td></tr>`).join("")}
     </tbody></table></div>
     <p class="ayuda">Cada persona tiene un solo correo y PIN para entrar a todos sus hoteles. ¿Ya trabaja en otro de tus hoteles? Usa "Traer de otro hotel".</p>`;
 
@@ -1098,17 +1180,18 @@ async function aPersonas(panel, recargar) {
       <label for="p-correo">Correo <span class="ayuda">(con el que entrará)</span></label><input id="p-correo" name="correo" type="email" required>
       <label for="p-pin">PIN inicial <span class="ayuda">(díselo en persona; puede cambiarlo después)</span></label>
       <input id="p-pin" name="pin" type="text" inputmode="numeric" maxlength="6" class="pin" value="${pin}" required>
-      <label for="p-rol">Rol</label><select id="p-rol" name="rol">${roles.map((r) => `<option value="${r}">${ROL[r]}</option>`).join("")}</select>
-      <label for="p-area">Área</label><select id="p-area" name="area">${opArea(null)}</select>
+      ${camposRolArea("p", roles, { rol: "operador" })}
       <div class="acciones"><button class="btn" type="submit">Crear</button><button class="btn sec" type="button" data-cerrar>Cancelar</button></div></form>`);
+    const leerRol = conectarRolArea(d, "p");
     alEnviar(d.querySelector("form"), async (f) => {
+      const ra = leerRol();
       const correo = String(f.get("correo")).trim().toLowerCase();
       const { data } = await sb.rpc("persona_por_correo", { p_hotel: S.hotel.id, p_correo: correo });
       const ya = data?.[0];
       if (ya?.en_este_hotel) throw new Error(`${ya.nombre} ya está en este hotel. Para cambiar su rol o área, usa Editar en la lista.`);
       if (ya && !(await confirmar(`${ya.nombre} ya tiene usuario con ese correo. ¿Darle acceso a este hotel? Entrará con el mismo PIN que ya usa.`, { boton: "Dar acceso" }))) return;
       if (!ya && !/^\d{6}$/.test(f.get("pin"))) throw new Error("El PIN debe tener 6 dígitos.");
-      await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: ya ? ya.nombre : f.get("nombre"), correo, pin: ya ? undefined : f.get("pin"), rol: f.get("rol"), area_id: f.get("area") || null });
+      await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: ya ? ya.nombre : f.get("nombre"), correo, pin: ya ? undefined : f.get("pin"), ...ra });
       d.close();
       if (ya) aviso(`Listo: ${ya.nombre} ya tiene acceso a este hotel y entra con su PIN de siempre.`);
       else mostrarAcceso(f.get("nombre"), correo, f.get("pin"));
@@ -1132,13 +1215,13 @@ async function aPersonas(panel, recargar) {
       const area = S.areas.find((a) => a.activa && g.area && a.nombre.toLowerCase() === g.area.toLowerCase());
       cuerpo.innerHTML = `<form method="dialog"><p class="titulo" style="margin:0">${esc(g.nombre)}</p>
         <p class="meta" style="margin:4px 0 0">${esc(g.correo)} · trabaja en ${esc(g.hoteles)}</p>
-        <label for="t-rol">Rol en este hotel</label><select id="t-rol" name="rol">${roles.map((r) => `<option value="${r}" ${r === g.rol ? "selected" : ""}>${ROL[r]}</option>`).join("")}</select>
-        <label for="t-area">Área en este hotel</label><select id="t-area" name="area">${opArea(area?.id ?? null)}</select>
+        ${camposRolArea("t", roles, { rol: g.rol, area_id: area?.id ?? null })}
         <p class="ayuda">Entrará con el mismo correo y PIN que ya usa en ${esc(g.hoteles)}.</p>
         <div class="acciones"><button class="btn" type="submit">Agregar a este hotel</button><button class="btn sec" type="button" id="t-volver">Volver</button></div></form>`;
       alClic("#t-volver", async () => pintar(), cuerpo);
-      alEnviar(cuerpo.querySelector("form"), async (f) => {
-        await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: g.nombre, correo: g.correo, rol: f.get("rol"), area_id: f.get("area") || null });
+      const leerRol = conectarRolArea(cuerpo, "t");
+      alEnviar(cuerpo.querySelector("form"), async () => {
+        await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: g.nombre, correo: g.correo, ...leerRol() });
         d.close(); aviso(`Listo: ${g.nombre} ya tiene acceso a este hotel.`); recargar();
       });
     };
@@ -1166,21 +1249,22 @@ async function aPersonas(panel, recargar) {
       <label for="e-nombre">Nombre</label><input id="e-nombre" type="text" value="${esc(p.nombre)}" required>
       <label for="e-correo">Correo <span class="ayuda">(con el que entra)</span></label><input id="e-correo" type="email" value="${esc(p.correo)}" required>
       ${otros[p.id] ? `<p class="ayuda">También trabaja en ${esc(otros[p.id])}. Su correo y su PIN son los mismos en todos sus hoteles.</p>` : ""}
-      <label for="e-rol">Rol</label><select id="e-rol">${roles.map((r) => `<option value="${r}" ${r === p.rol ? "selected" : ""}>${ROL[r]}</option>`).join("")}</select>
-      <label for="e-area">Área</label><select id="e-area">${opArea(p.area_id)}</select>
+      ${camposRolArea("e", roles, p)}
       <label class="check"><input type="checkbox" id="e-activa" ${p.activa ? "checked" : ""}> Tiene acceso a este hotel</label>
       <div class="acciones"><button class="btn" id="e-guardar" type="button">Guardar</button><button class="btn sec" type="button" id="e-pin">Asignar PIN nuevo</button>
       <button class="btn sec" type="button" data-cerrar>Cerrar</button></div>
       <div class="acciones"><button class="btn peligro chico" type="button" id="e-eliminar">Eliminar persona</button></div>
       <p class="ayuda">Eliminar solo funciona si la persona aún no ha registrado nada. Si ya tiene historial, desmarca "Tiene acceso".</p></form>`);
+    const leerRol = conectarRolArea(d, "e");
     alClic("#e-guardar", async () => {
       const nombre = d.querySelector("#e-nombre").value.trim(), correo = d.querySelector("#e-correo").value.trim().toLowerCase();
       if (!nombre || !correo.includes("@")) throw new Error("Revisa el nombre y el correo.");
       if (nombre !== p.nombre || correo !== p.correo) {
         await llamarFuncion({ accion: "editar", hotel_id: S.hotel.id, perfil_id: p.id, nombre, correo });
       }
-      const cambios = { rol: d.querySelector("#e-rol").value, area_id: d.querySelector("#e-area").value || null, activa: d.querySelector("#e-activa").checked };
-      if (cambios.rol !== p.rol || cambios.area_id !== (p.area_id ?? null) || cambios.activa !== p.activa) {
+      const cambios = { ...leerRol(), activa: d.querySelector("#e-activa").checked };
+      if (cambios.rol !== p.rol || cambios.area_id !== (p.area_id ?? null) || cambios.activa !== p.activa
+        || [...cambios.areas].sort().join() !== [...p.areas].sort().join()) {
         await q(sb.from("membresias").update(cambios).eq("id", p.membresia));
       }
       d.close(); aviso(correo !== p.correo ? `Cambios guardados. Ahora entra con ${correo}.` : "Cambios guardados."); recargar();
@@ -1246,12 +1330,13 @@ function aAreas(panel, recargar) {
 }
 
 function aTurnos(panel, recargar) {
+  const mias = areasQueLidero();
   listaEditable(panel, {
     columnas: ["Área", "Turno", "Horario", "Estado"],
-    filas: S.turnos.map((t) => `<tr><td>${esc(areaDe(t.area_id))}</td><td>${esc(t.nombre)}</td><td>${t.hora_inicio.slice(0, 5)} a ${t.hora_fin.slice(0, 5)}</td>
+    filas: S.turnos.filter((t) => mias.some((a) => a.id === t.area_id)).map((t) => `<tr><td>${esc(areaDe(t.area_id))}</td><td>${esc(t.nombre)}</td><td>${t.hora_inicio.slice(0, 5)} a ${t.hora_fin.slice(0, 5)}</td>
       <td>${t.activo ? "Activo" : "Inactivo"}</td><td><button class="btn sec chico" data-alt="${t.id}">${t.activo ? "Desactivar" : "Activar"}</button></td></tr>`).join("")
       || `<tr><td colspan="5" class="meta">${esc(S.hotel.nombre)} aún no tiene turnos. Agrega los de cada área, por ejemplo Mañana de 06:00 a 14:00.</td></tr>`,
-    nueva: `<select name="area" aria-label="Área">${S.areas.filter((a) => a.activa).map((a) => `<option value="${a.id}">${esc(a.nombre)}</option>`).join("")}</select>
+    nueva: `<select name="area" aria-label="Área">${mias.map((a) => `<option value="${a.id}">${esc(a.nombre)}</option>`).join("")}</select>
       <input name="nombre" type="text" placeholder="Nombre (Mañana)" required aria-label="Nombre del turno">
       <input name="inicio" type="time" required aria-label="Hora de inicio" value="06:00"><input name="fin" type="time" required aria-label="Hora de fin" value="14:00">`,
     guardar: async (f) => {
@@ -1285,7 +1370,7 @@ function aModulos(panel, recargar) {
     const m = S.modulos.find((x) => x.modulo === k) ?? { activo: false, areas: [] };
     return `<form class="tarjeta" data-mod="${k}"><div class="titulo">${esc(def.nombre)}</div><p class="meta">${esc(def.desc)}</p>
       <label class="check"><input type="checkbox" name="activo" ${m.activo ? "checked" : ""}> Activo en ${esc(S.hotel.nombre)}</label>
-      <label>Áreas que lo usan <span class="ayuda">(los líderes lo ven siempre que esté activo)</span></label>
+      <label>Áreas que lo usan <span class="ayuda">(el gerente lo ve siempre que esté activo)</span></label>
       ${areas.map((a) => `<label class="check"><input type="checkbox" name="area" value="${a.id}" ${m.areas.includes(a.id) ? "checked" : ""}> ${esc(a.nombre)}</label>`).join("")}
       <div class="acciones"><button class="btn" type="submit">Guardar</button></div></form>`;
   }).join("") + `<p class="ayuda">Pruébalo primero en el Hotel de pruebas. Apagar un módulo lo oculta, pero no borra lo que ya se registró.</p>`;
@@ -1329,10 +1414,11 @@ async function guardarPuntos(plantillaId, items, texto) {
 const sinPuntos = (texto) => !String(texto).split("\n").some((t) => t.trim());
 
 async function aChecklists(panel, recargar) {
-  const areas = areasDelModulo("checklist");
+  const lidero = areasQueLidero();
+  const areas = areasDelModulo("checklist").filter((a) => lidero.some((x) => x.id === a.id));
   const listas = (await q(sb.from("checklist_plantillas").select("*, items:checklist_items(*)").eq("hotel_id", S.hotel.id).order("nombre")))
-    .sort((a, b) => areaDe(a.area_id).localeCompare(areaDe(b.area_id)));
-  panel.innerHTML = `${areas.length ? "" : `<p class="vacio">Ninguna área usa el checklist. ${S.perfil.es_admin_global ? "Elígelas en la pestaña Módulos." : "Pídele al administrador que las elija."}</p>`}
+    .filter((p) => lidero.some((x) => x.id === p.area_id)).sort((a, b) => areaDe(a.area_id).localeCompare(areaDe(b.area_id)));
+  panel.innerHTML = `${areas.length ? "" : `<p class="vacio">${esAdmin() ? "Ninguna área usa el checklist." : "Ninguna de tus áreas usa el checklist."} ${S.perfil.es_admin_global ? "Elígelas en la pestaña Módulos." : "Pídele al administrador que las elija."}</p>`}
     <div class="tabla-scroll"><table><thead><tr><th>Área</th><th>Lista</th><th>Turno</th><th>Puntos</th><th>Estado</th><th></th></tr></thead><tbody>
     ${listas.map((p) => `<tr><td>${esc(areaDe(p.area_id))}</td><td>${esc(p.nombre)}</td><td>${esc(turnoDe(p.turno_id))}</td>
       <td>${puntosActivos(p).length}</td><td>${p.activa ? "Activa" : "Inactiva"}</td><td><button class="btn sec chico" data-l="${p.id}">Editar</button></td></tr>`).join("")
@@ -1458,7 +1544,7 @@ function describir(r) {
 }
 
 async function vLog(_, params) {
-  if (!alMenos("lider")) throw new Error("Esta sección es solo para líderes.");
+  if (!todoElHotel()) throw new Error("El registro de actividad es solo para gerentes y administradores.");
   const hoy = new Date().toISOString().slice(0, 10);
   const f = { desde: params.get("desde") ?? new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10), hasta: params.get("hasta") ?? hoy, tabla: params.get("tabla") ?? "", persona: params.get("persona") ?? "" };
   const consulta = (lim) => {

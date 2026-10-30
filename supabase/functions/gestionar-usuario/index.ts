@@ -1,4 +1,4 @@
-// Crea, corrige y elimina usuarios, y cambia PINs. Solo líderes (en su hotel) y administradores.
+// Crea, corrige y elimina usuarios, y cambia PINs. Solo gerentes (en su hotel) y administradores.
 // Se necesita la clave de servicio para crear cuentas, por eso esto no puede vivir en la página.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
@@ -7,7 +7,7 @@ const cors = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
-const ORDEN = ["operador", "jefe_servicio", "lider", "admin"];
+const ORDEN = ["operador", "jefe_servicio", "lider", "gerente", "admin"];
 
 function resp(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
 
     const b = await req.json();
     const { data: miRol } = await yo.rpc("mi_rol", { p_hotel: b.hotel_id });
-    if (!miRol || ORDEN.indexOf(miRol) < ORDEN.indexOf("lider")) return resp({ error: "Solo líderes o administradores" }, 403);
+    if (!miRol || ORDEN.indexOf(miRol) < ORDEN.indexOf("gerente")) return resp({ error: "Solo gerentes o administradores" }, 403);
     const soyAdmin = miRol === "admin";
     if (b.pin !== undefined && !/^\d{6}$/.test(String(b.pin))) return resp({ error: "El PIN debe tener 6 dígitos" }, 400);
 
@@ -39,7 +39,9 @@ Deno.serve(async (req) => {
       const nombre = String(b.nombre ?? "").trim();
       if (!correo || !nombre) return resp({ error: "Falta correo o nombre" }, 400);
       if (!ORDEN.includes(b.rol) || b.rol === "admin") return resp({ error: "Rol no válido" }, 400);
-      if (ORDEN.indexOf(b.rol) >= ORDEN.indexOf("lider") && !soyAdmin) return resp({ error: "Solo un administrador puede crear líderes" }, 403);
+      if (ORDEN.indexOf(b.rol) >= ORDEN.indexOf("gerente") && !soyAdmin) return resp({ error: "Solo un administrador puede crear gerentes" }, 403);
+      const areas = Array.isArray(b.areas) ? b.areas.filter((a: unknown) => typeof a === "string") : [];
+      if (b.rol === "lider" && !areas.length && !b.area_id) return resp({ error: "Elige al menos un área para el líder" }, 400);
 
       const { data: existente } = await admin.from("perfiles").select("id").eq("correo", correo).maybeSingle();
       let id = existente?.id;
@@ -52,19 +54,19 @@ Deno.serve(async (req) => {
         id = nuevo.user.id;
       }
       const { error: em } = await yo.from("membresias").upsert(
-        { perfil_id: id, hotel_id: b.hotel_id, rol: b.rol, area_id: b.area_id || null, activa: true },
+        { perfil_id: id, hotel_id: b.hotel_id, rol: b.rol, area_id: b.area_id || null, areas, activa: true },
         { onConflict: "perfil_id,hotel_id" },
       );
       if (em) return resp({ error: em.message }, 400);
       return resp({ ok: true, id, yaExistia: !!existente });
     }
 
-    // Las demás acciones son sobre una persona de este hotel; a un líder solo lo toca un administrador
+    // Las demás acciones son sobre una persona de este hotel; a un gerente solo lo toca un administrador
     const { data: m } = await admin.from("membresias").select("id, rol")
       .eq("perfil_id", b.perfil_id).eq("hotel_id", b.hotel_id).maybeSingle();
     if (!m) return resp({ error: "Esa persona no está en este hotel" }, 404);
     if (b.perfil_id === u.user.id) return resp({ error: "Tus propios datos se cambian desde Mi cuenta" }, 400);
-    if (ORDEN.indexOf(m.rol) >= ORDEN.indexOf("lider") && !soyAdmin) return resp({ error: "Solo un administrador puede cambiar a un líder" }, 403);
+    if (ORDEN.indexOf(m.rol) >= ORDEN.indexOf("gerente") && !soyAdmin) return resp({ error: "Solo un administrador puede cambiar a un gerente" }, 403);
     const registrar = (accion: string, antes: unknown, despues: unknown) =>
       admin.from("log_auditoria").insert({ perfil_id: u.user.id, hotel_id: b.hotel_id, tabla: "perfiles", accion, registro_id: b.perfil_id, antes, despues });
 
