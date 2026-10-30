@@ -1000,16 +1000,19 @@ async function vAdmin(_, params) {
   ({ personas: aPersonas, areas: aAreas, turnos: aTurnos, tipos: aTipos, checklists: aChecklists, modulos: aModulos, hoteles: aHoteles }[tab] ?? aPersonas)(panel, recargar);
 }
 
-function aPersonas(panel, recargar) {
+async function aPersonas(panel, recargar) {
+  // Una persona tiene un solo correo y PIN para todos sus hoteles: se muestra dónde más trabaja
+  const { data: enOtros } = await sb.rpc("otros_hoteles_de_personas", { p_hotel: S.hotel.id });
+  const otros = Object.fromEntries((enOtros ?? []).map((o) => [o.perfil_id, o.hoteles]));
   const roles = ORDEN.filter((r) => r !== "admin" && (S.perfil.es_admin_global || nivel(r) < nivel("lider")));
   const opArea = (sel) => `<option value="">Sin área (todo el hotel)</option>` + S.areas.filter((a) => a.activa).map((a) => `<option value="${a.id}" ${a.id === sel ? "selected" : ""}>${esc(a.nombre)}</option>`).join("");
   panel.innerHTML = `<div class="acciones" style="margin-top:0"><button class="btn" id="nueva">+ Persona nueva</button><button class="btn sec" id="traer">Traer de otro hotel</button></div>
     <div class="tabla-scroll" style="margin-top:14px"><table><thead><tr><th>Nombre</th><th>Rol</th><th>Área</th><th>Estado</th><th></th></tr></thead><tbody>
-    ${S.personas.map((p) => `<tr><td>${esc(p.nombre)}<div class="meta">${esc(p.correo)}</div></td><td>${ROL[p.rol]}</td>
+    ${S.personas.map((p) => `<tr><td>${esc(p.nombre)}<div class="meta">${esc(p.correo)}</div>${otros[p.id] ? `<div class="meta">También en ${esc(otros[p.id])}</div>` : ""}</td><td>${ROL[p.rol]}</td>
       <td>${p.area_id ? esc(areaDe(p.area_id)) : "—"}</td><td>${p.activa ? "Activa" : "Sin acceso"}</td>
       <td>${p.id !== S.user.id && (S.perfil.es_admin_global || nivel(p.rol) < nivel("lider")) ? `<button class="btn sec chico" data-p="${p.id}">Editar</button>` : ""}</td></tr>`).join("")}
     </tbody></table></div>
-    <p class="ayuda">¿Ya trabaja en otro de tus hoteles? Usa "Traer de otro hotel": conserva su correo y su PIN.</p>`;
+    <p class="ayuda">Cada persona tiene un solo correo y PIN para entrar a todos sus hoteles. ¿Ya trabaja en otro de tus hoteles? Usa "Traer de otro hotel".</p>`;
 
   // Persona nueva: si el correo ya tiene usuario, se ofrece darle acceso con su mismo PIN en vez de crear otro
   alClic("#nueva", async () => {
@@ -1055,7 +1058,7 @@ function aPersonas(panel, recargar) {
         <p class="meta" style="margin:4px 0 0">${esc(g.correo)} · trabaja en ${esc(g.hoteles)}</p>
         <label for="t-rol">Rol en este hotel</label><select id="t-rol" name="rol">${roles.map((r) => `<option value="${r}" ${r === g.rol ? "selected" : ""}>${ROL[r]}</option>`).join("")}</select>
         <label for="t-area">Área en este hotel</label><select id="t-area" name="area">${opArea(area?.id ?? null)}</select>
-        <p class="ayuda">Entrará con el mismo correo y PIN que ya usa.</p>
+        <p class="ayuda">Entrará con el mismo correo y PIN que ya usa en ${esc(g.hoteles)}.</p>
         <div class="acciones"><button class="btn" type="submit">Agregar a este hotel</button><button class="btn sec" type="button" id="t-volver">Volver</button></div></form>`;
       alClic("#t-volver", async () => pintar(), cuerpo);
       alEnviar(cuerpo.querySelector("form"), async (f) => {
@@ -1086,6 +1089,7 @@ function aPersonas(panel, recargar) {
     const d = dialogo(`<form method="dialog"><h2 style="margin-top:0">Editar persona</h2>
       <label for="e-nombre">Nombre</label><input id="e-nombre" type="text" value="${esc(p.nombre)}" required>
       <label for="e-correo">Correo <span class="ayuda">(con el que entra)</span></label><input id="e-correo" type="email" value="${esc(p.correo)}" required>
+      ${otros[p.id] ? `<p class="ayuda">También trabaja en ${esc(otros[p.id])}. Su correo y su PIN son los mismos en todos sus hoteles.</p>` : ""}
       <label for="e-rol">Rol</label><select id="e-rol">${roles.map((r) => `<option value="${r}" ${r === p.rol ? "selected" : ""}>${ROL[r]}</option>`).join("")}</select>
       <label for="e-area">Área</label><select id="e-area">${opArea(p.area_id)}</select>
       <label class="check"><input type="checkbox" id="e-activa" ${p.activa ? "checked" : ""}> Tiene acceso a este hotel</label>
@@ -1114,7 +1118,7 @@ function aPersonas(panel, recargar) {
     }, d);
     alClic("#e-pin", async () => {
       const pin = pinAleatorio();
-      if (!(await confirmar(`El PIN de ${p.nombre} pasará a ser ${pin}. Díselo en persona.`, { boton: "Cambiar PIN" }))) return;
+      if (!(await confirmar(`El PIN de ${p.nombre} pasará a ser ${pin}${otros[p.id] ? `, también para entrar en ${otros[p.id]}` : ""}. Díselo en persona.`, { boton: "Cambiar PIN" }))) return;
       await llamarFuncion({ accion: "resetear_pin", hotel_id: S.hotel.id, perfil_id: p.id, pin });
       d.close();
       mostrarAcceso(p.nombre, p.correo, pin);
@@ -1126,7 +1130,7 @@ function aPersonas(panel, recargar) {
 function mostrarAcceso(nombre, correo, pin) {
   const texto = `Bitácora Masaya\n${location.origin}${location.pathname}\nCorreo: ${correo}\nPIN: ${pin}`;
   const d = dialogo(`<div><h2 style="margin-top:0">Datos de acceso de ${esc(nombre)}</h2>
-    <p class="meta">Entrégaselos en persona. Puede cambiar el PIN después en Mi cuenta.</p>
+    <p class="meta">Entrégaselos en persona. Es el mismo PIN para todos los hoteles donde trabaje; puede cambiarlo después en Mi cuenta.</p>
     <label>Correo</label><p class="titulo" style="margin:0;overflow-wrap:anywhere">${esc(correo)}</p>
     <label>PIN</label><p class="pin" style="font-size:2rem;font-weight:700;margin:0;text-align:left">${esc(pin)}</p>
     <div class="acciones"><button class="btn sec" id="copiar">Copiar datos</button><button class="btn" data-cerrar>Ya lo anoté</button></div></div>`);
