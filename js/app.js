@@ -1449,7 +1449,12 @@ function describir(r) {
     if (r.tabla === "checklist_marcas" || r.tabla === "modulos_hotel") detalle = (d.texto ?? MODULOS[d.modulo]?.nombre ?? "") + (detalle ? " · " + detalle : "");
     if (r.tabla === "perfiles") detalle = d.pin ? `PIN de ${nombreDe(r.registro_id)}` : ["nombre", "correo"].filter((k) => a[k] !== d[k]).map((k) => `${k}: ${a[k]} → ${d[k]}`).join("; ");
   } else if (r.accion === "DELETE") detalle = a.nombre ? `${a.nombre} (${a.correo ?? ""})` : r.tabla === "membresias" ? `acceso de ${nombreDe(a.perfil_id)}` : (a.titulo ?? a.nombre ?? "");
-  return { cosa, detalle: String(detalle ?? "").slice(0, 200) };
+  // A qué se refiere el registro y adónde lleva al tocarlo (novedad, tarea, o donde se escribió el comentario)
+  const x = r.accion === "DELETE" ? {} : d;
+  const enlace = r.tabla === "novedades" ? "novedad/" + r.registro_id : r.tabla === "tareas" ? "tarea/" + r.registro_id
+    : x.novedad_id ? "novedad/" + x.novedad_id : x.tarea_id ? "tarea/" + x.tarea_id : null;
+  const sobre = r.accion === "UPDATE" && ["novedades", "tareas"].includes(r.tabla) ? (x.titulo ?? x.descripcion ?? "") : "";
+  return { cosa, detalle: String(detalle ?? "").slice(0, 200), sobre: sobre.length > 90 ? sobre.slice(0, 90) + "…" : sobre, enlace };
 }
 
 async function vLog(_, params) {
@@ -1474,9 +1479,10 @@ async function vLog(_, params) {
       <select name="persona" aria-label="Persona">${opt("", "Todas las personas", f.persona)}${S.personas.map((p) => opt(p.id, p.nombre, f.persona)).join("")}</select>
     </form>
     <div class="acciones" style="margin-top:0;margin-bottom:12px"><button class="btn sec chico" id="csv">Descargar para Excel (CSV)</button></div>
-    ${filas.length ? filas.map((r) => { const x = describir(r); return `<div class="tarjeta">
+    ${filas.length ? filas.map((r) => { const x = describir(r); const et = x.enlace ? "a" : "div"; return `<${et} class="tarjeta log ${x.enlace ? "con-enlace" : ""}" ${x.enlace ? `href="#/${esc(x.enlace)}"` : ""}>
         <div class="meta">${fmtFecha.format(new Date(r.en))} · ${esc(r.perfil_id ? nombreDe(r.perfil_id) : "Sistema")}</div>
-        <div><strong>${ACCION[r.accion] ?? r.accion} ${esc(x.cosa)}</strong>${x.detalle ? ": " + esc(x.detalle) : ""}</div></div>`; }).join("")
+        <div><strong>${ACCION[r.accion] ?? r.accion} ${esc(x.cosa)}</strong>${x.detalle ? ": " + esc(x.detalle) : ""}</div>
+        ${x.sobre ? `<div class="sobre">${esc(x.sobre)}</div>` : ""}${x.enlace ? `<span class="ir" aria-hidden="true">›</span>` : ""}</${et}>`; }).join("")
       + (filas.length === 300 ? `<p class="ayuda">Se muestran los 300 más recientes. Acota las fechas o descarga el CSV para ver todo.</p>` : "")
     : `<p class="vacio">No hay actividad en estas fechas.</p>`}`;
 
@@ -1485,10 +1491,10 @@ async function vLog(_, params) {
   alClic("#csv", async () => {
     const todas = await q(consulta(5000));
     const celda = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const lineas = [["Fecha", "Persona", "Acción", "Qué", "Detalle", "Id"].map(celda).join(";")];
+    const lineas = [["Fecha", "Persona", "Acción", "Qué", "Detalle", "Sobre", "Id"].map(celda).join(";")];
     for (const r of todas) {
       const x = describir(r);
-      lineas.push([new Date(r.en).toLocaleString("es-CO"), r.perfil_id ? nombreDe(r.perfil_id) : "Sistema", ACCION[r.accion] ?? r.accion, x.cosa, x.detalle, r.registro_id].map(celda).join(";"));
+      lineas.push([new Date(r.en).toLocaleString("es-CO"), r.perfil_id ? nombreDe(r.perfil_id) : "Sistema", ACCION[r.accion] ?? r.accion, x.cosa, x.detalle, x.sobre, r.registro_id].map(celda).join(";"));
     }
     const blob = new Blob(["﻿" + lineas.join("\r\n")], { type: "text/csv;charset=utf-8" });
     const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `registro-${S.hotel.nombre.replace(/\W+/g, "-")}-${f.desde}-a-${f.hasta}.csv` });
