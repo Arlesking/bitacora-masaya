@@ -981,7 +981,7 @@ async function vAdmin(_, params) {
   const tab = params.get("ver") ?? "personas";
   const pest = [["personas", "Personas"], ["areas", "Áreas"], ["turnos", "Turnos"], ["tipos", "Tipos de novedad"],
     ...(usaModulo("checklist") ? [["checklists", "Checklists"]] : []),
-    ...(S.perfil.es_admin_global ? [["modulos", "Módulos"], ["hoteles", "Hoteles"]] : [])];
+    ...(S.perfil.es_admin_global ? [["todas", "Todas las personas"], ["modulos", "Módulos"], ["hoteles", "Hoteles"]] : [])];
   const hotelesLider = S.membresias.filter((m) => nivel(m.rol) >= nivel("lider"));
   app.innerHTML = `<h1>Ajustes</h1>
     ${hotelesLider.length > 1 ? `<label for="ajuste-hotel">Hotel que estás configurando</label>
@@ -997,7 +997,7 @@ async function vAdmin(_, params) {
     vAdmin(_, params);
   });
   const recargar = async () => { await entrarAlHotel(S.hotel.id); vAdmin(_, params); };
-  ({ personas: aPersonas, areas: aAreas, turnos: aTurnos, tipos: aTipos, checklists: aChecklists, modulos: aModulos, hoteles: aHoteles }[tab] ?? aPersonas)(panel, recargar);
+  ({ personas: aPersonas, areas: aAreas, turnos: aTurnos, tipos: aTipos, checklists: aChecklists, modulos: aModulos, hoteles: aHoteles, todas: aTodas }[tab] ?? aPersonas)(panel, recargar);
 }
 
 async function aPersonas(panel, recargar) {
@@ -1293,6 +1293,32 @@ async function aChecklists(panel, recargar) {
       d.close(); aviso("Lista guardada."); recargar();
     });
   }, panel);
+}
+
+// Solo el administrador: cada persona con los hoteles donde trabaja, su rol y su área en cada uno
+async function aTodas(panel) {
+  const [perfiles, membs] = await Promise.all([
+    q(sb.from("perfiles").select("id, nombre, correo, es_admin_global").order("nombre")),
+    q(sb.from("membresias").select("perfil_id, rol, activa, hotel:hoteles(nombre, es_prueba), area:areas(nombre)")),
+  ]);
+  const tarjeta = (p) => {
+    const suyas = membs.filter((m) => m.perfil_id === p.id && m.hotel).sort((a, b) => a.hotel.nombre.localeCompare(b.hotel.nombre));
+    const lineas = p.es_admin_global ? `<li>Administrador de todos los hoteles</li>`
+      : suyas.map((m) => `<li><strong>${esc(m.hotel.nombre)}</strong>${m.hotel.es_prueba ? " (pruebas)" : ""} · ${ROL[m.rol]}${m.area ? " · " + esc(m.area.nombre) : ""}${m.activa ? "" : ` · <span class="chip vencida">Sin acceso</span>`}</li>`).join("")
+        || `<li class="meta">No está en ningún hotel</li>`;
+    return `<div class="tarjeta" data-buscar="${esc((p.nombre + " " + p.correo).toLowerCase())}"><span class="titulo">${esc(p.nombre)}</span>
+      <span class="meta" style="display:block">${esc(p.correo)}</span><ul style="margin:8px 0 0;padding-left:18px">${lineas}</ul></div>`;
+  };
+  panel.innerHTML = `<p class="ayuda" style="margin-top:0">Cada persona entra con un solo correo y PIN a todos sus hoteles. Para darle acceso a otro hotel, entra a ese hotel y usa "Traer de otro hotel".</p>
+    <input type="search" id="todas-buscar" placeholder="Buscar por nombre o correo" aria-label="Buscar persona">
+    <p class="meta" id="todas-n">${perfiles.length} personas</p>
+    <div id="todas-lista" style="display:grid;gap:8px">${perfiles.map(tarjeta).join("")}</div>`;
+  panel.querySelector("#todas-buscar").addEventListener("input", (e) => {
+    const f = e.target.value.trim().toLowerCase();
+    let n = 0;
+    panel.querySelectorAll("#todas-lista > [data-buscar]").forEach((t) => { const ve = !f || t.dataset.buscar.includes(f); t.style.display = ve ? "" : "none"; if (ve) n++; });
+    panel.querySelector("#todas-n").textContent = `${n} ${n === 1 ? "persona" : "personas"}`;
+  });
 }
 
 async function aHoteles(panel) {
