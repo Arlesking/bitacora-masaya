@@ -14,7 +14,7 @@ Bitácora web de turnos para hoteles: novedades, entrega de turno, tareas y regi
 | --- | --- |
 | Administrador | Todo, en todos los hoteles. Crea hoteles, grupos y gerentes. Es el único que cambia áreas, tipos de novedad y módulos. |
 | Gerente | Todo su hotel: ve todo, manda avisos a todo el hotel o a cualquier área, agrega y cambia personas (hasta líder) y ve el registro. No cambia ajustes. |
-| Líder | Una o varias áreas: ve lo de ellas, les manda avisos, asigna sus tareas y arma sus turnos y checklists. |
+| Líder | Una o varias áreas: ve lo de ellas, les manda avisos, asigna sus tareas, arma sus turnos y checklists y ve el registro de lo que toca a sus áreas. |
 | Jefe de servicio | Su área: asigna sus tareas, le manda avisos y cierra novedades. |
 | Operador | Crear novedades y tareas, comentar, marcar checklists, tomar y completar tareas de su área. |
 
