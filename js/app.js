@@ -319,7 +319,8 @@ const lugarTexto = (l) => (/^\d{2,4}[a-z]?$/i.test(l.trim()) ? "Hab. " + l.trim(
 
 function paraTexto(n) {
   if (n.para_perfil_id) return "Para " + (n.para_perfil?.nombre ?? nombreDe(n.para_perfil_id));
-  if (n.para_area_id) return "Para " + areaDe(n.para_area_id);
+  const areas = n.para_areas?.length ? n.para_areas : n.para_area_id ? [n.para_area_id] : [];
+  if (areas.length) return "Para " + areas.map(areaDe).join(", ");
   return "Todo el hotel";
 }
 
@@ -463,7 +464,7 @@ async function vInicio() {
 const VISTAS = {
   abiertas: { nombre: "Abiertas", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]) },
   urgentes: { nombre: "Urgentes", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]).in("urgencia", URGENTE) },
-  area: { nombre: "Mi área", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]).eq("para_area_id", S.area), solo: () => !!S.area },
+  area: { nombre: "Mi área", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]).contains("para_areas", [S.area]), solo: () => !!S.area },
   hoy: { nombre: "Hoy", aplicar: (c) => c.gte("creado_en", new Date(new Date().setHours(0, 0, 0, 0)).toISOString()).neq("estado", "anulada") },
   todas: { nombre: "Todas", aplicar: (c) => c },
 };
@@ -487,7 +488,7 @@ async function vNovedades(_, params) {
     .order("creado_en", { ascending: false }).limit(f.n);
   if (f.estado) c = c.eq("estado", f.estado);
   if (f.tipo) c = c.eq("tipo_id", f.tipo);
-  if (f.area) c = c.eq("para_area_id", f.area);
+  if (f.area) c = c.contains("para_areas", [f.area]);
   if (f.texto) { const t = f.texto.replace(/[%,()*]/g, " ").trim(); c = c.or(`descripcion.ilike.*${t}*,lugar.ilike.*${t}*`); }
   const [{ data: todas, count }, ...conteos] = await Promise.all([q(c),
     ...vistas.map(([, v]) => q(v.aplicar(deEsteHotel(visibles(sb.from("novedades").select("id", { count: "exact", head: true }))))).then((r) => r.count ?? 0))]);
@@ -563,11 +564,11 @@ async function vNuevaNovedad() {
         <label>¿Para quién?</label>
         <div class="opciones">
           <label><input type="radio" name="para" value="hotel" checked><span>Todo el hotel</span></label>
-          <label><input type="radio" name="para" value="area"><span>Un área</span></label>
+          <label><input type="radio" name="para" value="area"><span>Una o más áreas</span></label>
           <label><input type="radio" name="para" value="persona"><span>Una persona</span></label>
         </div>
-        <div id="para-area" hidden><label for="area">Área</label>
-          <select id="area" name="area">${S.areas.filter((a) => a.activa).map((a) => `<option value="${a.id}">${esc(a.nombre)}</option>`).join("")}</select></div>
+        <div id="para-area" hidden><label>Áreas <span class="ayuda">(toca todas las que apliquen)</span></label>
+          <div class="opciones">${S.areas.filter((a) => a.activa).map((a) => `<label><input type="checkbox" name="areas" value="${a.id}"><span>${esc(a.nombre)}</span></label>`).join("")}</div></div>
         <div id="para-persona" hidden><label for="persona">Persona</label>
           <select id="persona" name="persona">${S.personas.filter((p) => p.activa).map((p) => `<option value="${p.id}">${esc(p.nombre)}${p.area_id ? " · " + esc(areaDe(p.area_id)) : ""}</option>`).join("")}</select></div>
         ${enGrupo ? `<label class="check"><input type="checkbox" name="grupo"> Compartir con ${esc(S.grupo.filter((h) => h.id !== S.hotel.id).map((h) => h.nombre).join(", "))}</label>` : ""}
@@ -609,10 +610,12 @@ async function vNuevaNovedad() {
     if (!d.get("tipo")) { mostrar(1); throw new Error("Elige qué pasó."); }
     if (!desc) throw new Error("Escribe qué pasó.");
     const para = d.get("para");
-    const turno = turnoActual(S.area ?? (para === "area" ? d.get("area") : null));
+    const areas = para === "area" ? d.getAll("areas") : [];
+    if (para === "area" && !areas.length) throw new Error("Elige al menos un área.");
+    const turno = turnoActual(S.area ?? areas[0] ?? null);
     const fila = {
       hotel_id: S.hotel.id, autor_id: S.user.id, tipo_id: d.get("tipo"), urgencia: d.get("urgencia"),
-      para_area_id: para === "area" ? d.get("area") : null, para_perfil_id: para === "persona" ? d.get("persona") : null,
+      para_area_id: areas[0] ?? null, para_areas: areas.length ? areas : null, para_perfil_id: para === "persona" ? d.get("persona") : null,
       lugar: String(d.get("lugar") ?? "").trim() || null, descripcion: desc, compartida_grupo: d.get("grupo") === "on",
       turno_id: turno?.id ?? null,
     };
@@ -710,11 +713,11 @@ async function vTareas(_, params) {
 
 async function vNuevaTarea(_, params) {
   const novId = params.get("novedad");
-  const nov = novId ? await q(sb.from("novedades").select("id, descripcion, lugar, urgencia, para_area_id, tipo:tipos_novedad(nombre)").eq("id", novId).maybeSingle()) : null;
+  const nov = novId ? await q(sb.from("novedades").select("id, descripcion, lugar, urgencia, para_area_id, para_areas, tipo:tipos_novedad(nombre)").eq("id", novId).maybeSingle()) : null;
   const jefe = alMenos("jefe_servicio");
   const areas = jefe ? S.areas.filter((a) => a.activa) : S.areas.filter((a) => a.id === S.area);
   const personas = jefe ? S.personas.filter((p) => p.activa) : S.personas.filter((p) => p.id === S.user.id);
-  const areaInicial = nov?.para_area_id ?? S.area ?? areas[0]?.id;
+  const areaInicial = nov?.para_areas?.[0] ?? nov?.para_area_id ?? S.area ?? areas[0]?.id;
 
   app.innerHTML = `<h1>Nueva tarea</h1>
     ${nov ? `<p class="meta">Desde la novedad: ${esc(nov.tipo?.nombre ?? "")} · ${esc(nov.descripcion.slice(0, 90))}</p>` : ""}
