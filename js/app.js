@@ -183,8 +183,6 @@ function pintarBarra() {
   document.getElementById("menu").hidden = false;
   document.getElementById("hotel-nombre").textContent = S.hotel.nombre + (S.hotel.es_prueba ? " (pruebas)" : "");
   document.getElementById("hotel-rol").textContent = `${S.perfil.nombre} · ${ROL[S.rol]}${S.area ? " · " + areaDe(S.area) : ""}`;
-  document.querySelectorAll("#menu [data-min]").forEach((a) => (a.hidden = !alMenos(a.dataset.min)));
-  document.querySelectorAll("#menu [data-modulo]").forEach((a) => (a.hidden = !usaModulo(a.dataset.modulo)));
 }
 function ocultarBarra() {
   document.getElementById("barra").hidden = true;
@@ -210,9 +208,11 @@ async function enrutar() {
   if (S.user && !S.hotel && !["entrar", "hotel"].includes(nombre)) return ir("hotel");
   if (!vista) return ir(S.user ? "inicio" : "entrar");
 
-  document.querySelectorAll("#menu a").forEach((a) => a.classList.toggle("activo",
-    a.dataset.ruta === nombre || (a.dataset.ruta === "novedades" && ["novedad", "nueva-novedad"].includes(nombre))
-    || (a.dataset.ruta === "tareas" && ["tarea", "nueva-tarea"].includes(nombre))));
+  document.querySelectorAll("#menu [data-ruta]").forEach((a) => a.classList.toggle("activo",
+    a.dataset.ruta === nombre || (a.dataset.ruta === "novedades" && nombre === "novedad")
+    || (a.dataset.ruta === "tareas" && ["tarea", "nueva-tarea"].includes(nombre))
+    || (a.dataset.ruta === "mas" && ["checklist", "admin", "log"].includes(nombre))));
+  if (S.hotel && nombre !== "inicio") refrescarInsignias();
   app.innerHTML = `<p class="cargando">Cargando…</p>`;
   try {
     await vista(args, params);
@@ -293,6 +293,29 @@ async function salir() {
 // ===== Tarjetas =====
 const SEL_NOV = "*, tipo:tipos_novedad(nombre, color), autor:perfiles!novedades_autor_id_fkey(nombre), para_perfil:perfiles!novedades_para_perfil_id_fkey(nombre)";
 const SEL_TAR = "*, asignado:perfiles!tareas_asignada_a_fkey(nombre), creador:perfiles!tareas_creado_por_fkey(nombre)";
+const URGENTE = ["alta", "critica"];
+
+// Ícono de cada tipo de novedad, adivinado por palabras de su nombre (los tipos los edita el líder)
+const ICONOS = [
+  [/huesped|queja|solicitud|cliente/, `<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>`],
+  [/dano|manten|repar|averia/, `<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>`],
+  [/objeto|perdid|encontr|olvid/, `<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>`],
+  [/pendiente|turno/, `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>`],
+  [/llegada|vip|especial|celebra/, `<path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z"/>`],
+  [/segur|robo|vigil/, `<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/>`],
+  [/accident|salud|medic|herid/, `<path d="M12 5v14M5 12h14"/>`],
+  [/insumo|inventario|faltante|bodega/, `<path d="M4 7h16l-1.5 12h-13z"/><path d="M9 7V5h6v2"/>`],
+  [/ruido|music/, `<path d="M4 10v4h4l5 4V6L8 10z"/><path d="M16 9a4 4 0 0 1 0 6"/>`],
+  [/limpi|housekeeping|aseo/, `<path d="M12 3v10M7 21l1-8h8l1 8z"/>`],
+];
+const sinTildes = (t) => String(t ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+function iconoTipo(nombre) {
+  const n = sinTildes(nombre);
+  const trazo = ICONOS.find(([re]) => re.test(n))?.[1] ?? `<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>`;
+  return `<span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24">${trazo}</svg></span>`;
+}
+// "204" se lee como habitación; cualquier otro texto se deja como está
+const lugarTexto = (l) => (/^\d{2,4}[a-z]?$/i.test(l.trim()) ? "Hab. " + l.trim() : l);
 
 function paraTexto(n) {
   if (n.para_perfil_id) return "Para " + (n.para_perfil?.nombre ?? nombreDe(n.para_perfil_id));
@@ -300,16 +323,20 @@ function paraTexto(n) {
   return "Todo el hotel";
 }
 
+// Solo se muestra lo que se sale de lo normal: urgencia alta o crítica, y estado distinto de "Abierta"
 function tarjetaNovedad(n, noLeida = false) {
-  const color = n.tipo?.color ?? "#6b7280";
-  return `<a class="tarjeta borde-tipo ${noLeida ? "no-leida" : ""} ${n.estado === "anulada" ? "anulada" : ""}" style="--tipo:${esc(color)}" href="#/novedad/${n.id}">
-    <div class="fila entre"><span class="fila">${noLeida ? `<span class="punto" title="Sin leer"></span>` : ""}
-      <span class="chip tipo">${esc(n.tipo?.nombre ?? "Novedad")}</span>
-      <span class="chip u-${n.urgencia}">${URG[n.urgencia]}</span>
-      ${n.hotel_id !== S.hotel.id ? `<span class="chip grupo">${esc(hotelDe(n.hotel_id))}</span>` : n.compartida_grupo ? `<span class="chip grupo">Compartida</span>` : ""}</span>
-      <span class="chip estado">${EST_N[n.estado]}</span></div>
-    <p class="desc">${esc(n.descripcion.length > 220 ? n.descripcion.slice(0, 220) + "…" : n.descripcion)}</p>
-    <div class="meta">${esc(n.autor?.nombre ?? "Alguien")} · ${fecha(n.creado_en)} · ${esc(paraTexto(n))}${n.lugar ? " · " + esc(n.lugar) : ""}</div>
+  const color = n.tipo?.color ?? "#6b7280", tipo = n.tipo?.nombre ?? "Novedad";
+  const urgente = URGENTE.includes(n.urgencia);
+  return `<a class="tarjeta nov ${urgente ? "urg-" + n.urgencia : ""} ${noLeida ? "no-leida" : ""} ${n.estado === "anulada" ? "anulada" : ""}" style="--tipo:${esc(color)}" href="#/novedad/${n.id}">
+    ${iconoTipo(tipo)}
+    <div class="cuerpo">
+      <div class="fila entre"><span class="titulo">${noLeida ? `<span class="punto" title="Sin leer"></span>` : ""}${esc(n.lugar ? lugarTexto(n.lugar) : tipo)}</span>
+        <span class="fila">${urgente ? `<span class="urg">${URG[n.urgencia]}</span>` : ""}
+        ${n.estado !== "abierta" ? `<span class="chip estado">${EST_N[n.estado]}</span>` : ""}
+        ${n.hotel_id !== S.hotel.id ? `<span class="chip grupo">${esc(hotelDe(n.hotel_id))}</span>` : n.compartida_grupo ? `<span class="chip grupo">Compartida</span>` : ""}</span></div>
+      <p class="desc">${esc(n.descripcion.length > 160 ? n.descripcion.slice(0, 160) + "…" : n.descripcion)}</p>
+      <div class="meta">${n.lugar ? esc(tipo) + " · " : ""}${esc(n.autor?.nombre ?? "Alguien")} · ${fecha(n.creado_en)} · ${esc(paraTexto(n))}</div>
+    </div>
   </a>`;
 }
 
@@ -323,56 +350,107 @@ function asignadoTexto(t) {
   return "Sin asignar";
 }
 function tarjetaTarea(t) {
-  return `<a class="tarjeta" href="#/tarea/${t.id}">
-    <div class="fila entre"><span class="titulo">${esc(t.titulo)}</span><span class="chip estado">${EST_T[t.estado]}</span></div>
-    <div class="fila" style="margin-top:6px"><span class="chip u-${t.urgencia}">${URG[t.urgencia]}</span>
-      ${vencida(t) ? `<span class="chip vencida">Vencida</span>` : ""}
+  const urgente = URGENTE.includes(t.urgencia);
+  return `<a class="tarjeta tar ${urgente ? "urg-" + t.urgencia : ""}" href="#/tarea/${t.id}">
+    <div class="fila entre"><span class="titulo">${esc(t.titulo)}</span>
+      <span class="fila">${urgente ? `<span class="urg">${URG[t.urgencia]}</span>` : ""}${t.estado !== "pendiente" ? `<span class="chip estado">${EST_T[t.estado]}</span>` : ""}</span></div>
+    <div class="fila" style="margin-top:4px">${vencida(t) ? `<span class="chip vencida">Vencida</span>` : ""}
       ${t.hotel_id !== S.hotel.id ? `<span class="chip grupo">${esc(hotelDe(t.hotel_id))}</span>` : ""}
       <span class="meta">${esc(asignadoTexto(t))}${t.fecha_limite ? " · vence " + fecha(t.fecha_limite) : ""}</span></div>
   </a>`;
 }
 
-// ===== Mi turno =====
-async function vInicio() {
-  const desde = new Date(Date.now() - 3 * 864e5).toISOString();
-  let [novs, leidas, mias, bandeja] = await Promise.all([
+// ===== Contadores del menú =====
+const HACE_3_DIAS = () => new Date(Date.now() - 3 * 864e5).toISOString();
+// Novedades de los últimos 3 días que otra persona escribió y yo no he leído
+async function novedadesSinLeer() {
+  const desde = HACE_3_DIAS();
+  const [novs, leidas] = await Promise.all([
     q(visibles(sb.from("novedades").select(SEL_NOV)).gte("creado_en", desde).neq("estado", "anulada")
       .neq("autor_id", S.user.id).order("creado_en", { ascending: false }).limit(100)),
     q(sb.from("novedad_lecturas").select("novedad_id").eq("perfil_id", S.user.id).gte("leido_en", desde)),
-    q(visibles(sb.from("tareas").select(SEL_TAR)).eq("asignada_a", S.user.id).in("estado", ["pendiente", "en_curso"]).order("fecha_limite", { nullsFirst: false })),
+  ]);
+  const leidasSet = new Set(leidas.map((l) => l.novedad_id));
+  return soloVisibles(novs).filter((n) => !leidasSet.has(n.id));
+}
+const misTareas = () => q(visibles(sb.from("tareas").select(SEL_TAR)).eq("asignada_a", S.user.id)
+  .in("estado", ["pendiente", "en_curso"]).order("fecha_limite", { nullsFirst: false }));
+
+function pintarInsignias(sinLeer, mias) {
+  const poner = (id, n) => { const el = document.getElementById(id); el.hidden = !n; el.textContent = n > 99 ? "99+" : n; };
+  poner("insignia-nov", sinLeer);
+  poner("insignia-tar", mias);
+}
+async function refrescarInsignias() {
+  try {
+    const [sinLeer, mias] = await Promise.all([novedadesSinLeer(), misTareas()]);
+    pintarInsignias(sinLeer.length, soloVisibles(mias).length);
+  } catch { /* los contadores son una ayuda; si fallan no se interrumpe la vista */ }
+}
+
+// ===== Menú "Más" =====
+function abrirMas() {
+  if (!S.hotel) return;
+  const it = (ruta, icono, texto) => `<a class="hoja-it" href="#/${ruta}" data-cerrar><svg viewBox="0 0 24 24" aria-hidden="true">${icono}</svg>${texto}</a>`;
+  const d = dialogo(`<div class="hoja-asa" data-cerrar></div><nav aria-label="Más opciones">
+    ${usaModulo("checklist") ? it("checklist", `<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8l1.5 1.5L12 7M8 14l1.5 1.5L12 13M14 8.5h3M14 14.5h3"/>`, "Checklist") : ""}
+    ${alMenos("lider") ? it("log", `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>`, "Registro de actividad") : ""}
+    ${alMenos("lider") ? it("admin", `<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>`, "Ajustes") : ""}
+    <button class="hoja-it" type="button" id="mas-cuenta"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Mi cuenta y PIN</button>
+    ${S.membresias.length > 1 ? `<button class="hoja-it" type="button" id="mas-hotel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/></svg>Cambiar de hotel</button>` : ""}
+  </nav>`);
+  d.classList.add("hoja");
+  d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
+  d.querySelector("#mas-cuenta").addEventListener("click", () => { d.close(); abrirCuenta(); });
+  d.querySelector("#mas-hotel")?.addEventListener("click", () => { d.close(); S.hotel = null; ir("hotel"); });
+}
+
+// ===== Mi turno =====
+async function vInicio() {
+  const [sinLeer, misT, bandeja, urgentesTodas] = await Promise.all([
+    novedadesSinLeer(),
+    misTareas(),
     S.area || alMenos("lider")
       ? q((S.area ? sb.from("tareas").select(SEL_TAR).eq("area_id", S.area) : sb.from("tareas").select(SEL_TAR).eq("hotel_id", S.hotel.id))
         .is("asignada_a", null).eq("estado", "pendiente").order("creado_en", { ascending: false }).limit(50))
       : Promise.resolve([]),
+    q(visibles(sb.from("novedades").select(SEL_NOV)).in("estado", ["abierta", "seguimiento"]).in("urgencia", URGENTE)
+      .order("creado_en", { ascending: false }).limit(20)),
   ]);
   const checklist = S.area && usaModulo("checklist") ? await checklistDelTurno(S.area) : null;
-  const leidasSet = new Set(leidas.map((l) => l.novedad_id));
-  const sinLeer = soloVisibles(novs).filter((n) => !leidasSet.has(n.id));
-  const urgentes = alMenos("jefe_servicio")
-    ? soloVisibles(await q(visibles(sb.from("novedades").select(SEL_NOV)).in("estado", ["abierta", "seguimiento"]).in("urgencia", ["alta", "critica"])
-      .order("creado_en", { ascending: false }).limit(20)))
-    : [];
   const turno = S.area ? turnoActual(S.area) : null;
-  mias = soloVisibles(mias);
+  const mias = soloVisibles(misT);
+  const urgentes = soloVisibles(urgentesTodas);
+  // Lo urgente sin leer va primero en la entrega; abajo solo se repiten las urgentes ya leídas
+  const sinLeerIds = new Set(sinLeer.map((n) => n.id));
+  sinLeer.sort((a, b) => URGENTE.includes(b.urgencia) - URGENTE.includes(a.urgencia));
+  const urgentesLeidas = urgentes.filter((n) => !sinLeerIds.has(n.id));
+  pintarInsignias(sinLeer.length, mias.length);
 
+  const total = checklist?.listas.reduce((n, p) => n + p.items.length, 0) ?? 0;
+  const hechos = checklist?.listas.reduce((n, p) => n + hechosDe(p), 0) ?? 0;
+  const hora = (h) => h.slice(0, 5);
   app.innerHTML = `<h1>Hola, ${esc(S.perfil.nombre.split(" ")[0])}</h1>
-    ${turno ? `<p class="meta">Turno actual: <strong>${esc(turno.nombre)}</strong></p>` : ""}
-    ${checklist?.listas.length ? (() => {
-      const total = checklist.listas.reduce((n, p) => n + p.items.length, 0), hechos = checklist.listas.reduce((n, p) => n + hechosDe(p), 0);
-      return `<a class="tarjeta" href="#/checklist"><div class="fila entre"><span class="titulo">Checklist del turno</span>
-        <span class="chip ${total && hechos === total ? "listo" : "estado"}">${hechos} de ${total}</span></div>
-        <div class="meta">${checklist.listas.map((p) => esc(p.nombre)).join(" · ")}</div></a>`;
-    })() : ""}
-    <div class="fila entre"><h2>Entrega de turno: sin leer (${sinLeer.length})</h2>
+    ${turno || total ? `<div class="turno-banda">
+      <span>${turno ? `Turno <strong>${esc(turno.nombre)}</strong> · ${hora(turno.hora_inicio)} a ${hora(turno.hora_fin)}` : "Checklist del turno"}</span>
+      ${total ? `<a href="#/checklist" class="progreso" aria-label="Checklist: ${hechos} de ${total}">${hechos}/${total}<span class="barra-prog"><i style="width:${Math.round(hechos / total * 100)}%"></i></span></a>` : ""}
+    </div>` : ""}
+    <div class="contadores">
+      <button type="button" class="contador ${sinLeer.length ? "ambar" : ""}" data-ir="sec-leer"><b>${sinLeer.length}</b><span>Por leer</span></button>
+      <button type="button" class="contador ${mias.length ? "verde" : ""}" data-ir="sec-tareas"><b>${mias.length}</b><span>Mis tareas</span></button>
+      <a class="contador ${urgentes.length ? "rojo" : ""}" href="#/novedades?ver=urgentes"><b>${urgentes.length}</b><span>${urgentes.length === 1 ? "Urgente" : "Urgentes"}</span></a>
+    </div>
+    <div class="fila entre" id="sec-leer"><h2>Entrega de turno: por leer (${sinLeer.length})</h2>
       ${sinLeer.length ? `<button class="btn sec chico" id="leer-todo">Marcar todo como leído</button>` : ""}</div>
     ${sinLeer.length ? sinLeer.map((n) => tarjetaNovedad(n, true)).join("") : `<p class="vacio">Estás al día. No hay novedades nuevas de los últimos 3 días.</p>`}
-    ${urgentes.length ? `<h2>Urgentes abiertas</h2>${urgentes.map((n) => tarjetaNovedad(n)).join("")}` : ""}
-    <h2>Mis tareas (${mias.length})</h2>
+    ${alMenos("jefe_servicio") && urgentesLeidas.length ? `<h2>Urgentes abiertas</h2>${urgentesLeidas.map((n) => tarjetaNovedad(n)).join("")}` : ""}
+    <h2 id="sec-tareas">Mis tareas (${mias.length})</h2>
     ${mias.length ? mias.map(tarjetaTarea).join("") : `<p class="vacio">No tienes tareas pendientes.</p>`}
     ${S.area || alMenos("lider") ? `<h2>${S.area ? "Bandeja de " + esc(areaDe(S.area)) : "Tareas sin asignar"} (${bandeja.length})</h2>
-      ${bandeja.length ? bandeja.map(tarjetaTarea).join("") : `<p class="vacio">No hay tareas esperando.</p>`}` : ""}
-    <a class="btn flotante" href="#/nueva-novedad">+ Novedad</a>`;
+      ${bandeja.length ? bandeja.map(tarjetaTarea).join("") : `<p class="vacio">No hay tareas esperando.</p>`}` : ""}`;
 
+  app.querySelectorAll("[data-ir]").forEach((b) => b.addEventListener("click", () =>
+    document.getElementById(b.dataset.ir).scrollIntoView({ behavior: "smooth", block: "start" })));
   alClic("#leer-todo", async () => {
     await q(sb.from("novedad_lecturas").upsert(sinLeer.map((n) => ({ novedad_id: n.id, perfil_id: S.user.id })), { onConflict: "novedad_id,perfil_id", ignoreDuplicates: true }));
     aviso("Listo, todo leído.");
@@ -381,88 +459,173 @@ async function vInicio() {
 }
 
 // ===== Novedades =====
+// Fichas de arriba: cada una es una vista lista para usar. "Más filtros" afina dentro de ella.
+const VISTAS = {
+  abiertas: { nombre: "Abiertas", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]) },
+  urgentes: { nombre: "Urgentes", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]).in("urgencia", URGENTE) },
+  area: { nombre: "Mi área", aplicar: (c) => c.in("estado", ["abierta", "seguimiento"]).eq("para_area_id", S.area), solo: () => !!S.area },
+  hoy: { nombre: "Hoy", aplicar: (c) => c.gte("creado_en", new Date(new Date().setHours(0, 0, 0, 0)).toISOString()).neq("estado", "anulada") },
+  todas: { nombre: "Todas", aplicar: (c) => c },
+};
+// Igual que soloVisibles(), pero en la consulta, para que los conteos salgan bien
+const deEsteHotel = (c) => c.or(`hotel_id.eq.${S.hotel.id},compartida_grupo.eq.true`);
+function diaDe(ts) {
+  const d = new Date(ts), hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  const dias = Math.round((hoy - new Date(d).setHours(0, 0, 0, 0)) / 864e5);
+  if (dias === 0) return "Hoy";
+  if (dias === 1) return "Ayer";
+  return new Intl.DateTimeFormat("es-CO", { weekday: "long", day: "numeric", month: "short" }).format(d);
+}
+
 async function vNovedades(_, params) {
+  const vistas = Object.entries(VISTAS).filter(([, v]) => !v.solo || v.solo());
   const f = {
-    estado: params.get("estado") ?? "activas", tipo: params.get("tipo") ?? "", urgencia: params.get("urgencia") ?? "",
-    area: params.get("area") ?? "", texto: params.get("texto") ?? "", n: Number(params.get("n") ?? 50),
+    ver: VISTAS[params.get("ver")] ? params.get("ver") : "abiertas", tipo: params.get("tipo") ?? "", area: params.get("area") ?? "",
+    estado: params.get("estado") ?? "", texto: params.get("texto") ?? "", n: Number(params.get("n") ?? 50),
   };
-  let c = visibles(sb.from("novedades").select(SEL_NOV, { count: "exact" })).order("creado_en", { ascending: false }).limit(f.n);
-  if (f.estado === "activas") c = c.in("estado", ["abierta", "seguimiento"]);
-  else if (f.estado !== "todas") c = c.eq("estado", f.estado);
+  let c = VISTAS[f.ver].aplicar(deEsteHotel(visibles(sb.from("novedades").select(SEL_NOV, { count: "exact" }))))
+    .order("creado_en", { ascending: false }).limit(f.n);
+  if (f.estado) c = c.eq("estado", f.estado);
   if (f.tipo) c = c.eq("tipo_id", f.tipo);
-  if (f.urgencia) c = c.eq("urgencia", f.urgencia);
   if (f.area) c = c.eq("para_area_id", f.area);
   if (f.texto) { const t = f.texto.replace(/[%,()*]/g, " ").trim(); c = c.or(`descripcion.ilike.*${t}*,lugar.ilike.*${t}*`); }
-  const { data: todas, count } = await q(c);
+  const [{ data: todas, count }, ...conteos] = await Promise.all([q(c),
+    ...vistas.map(([, v]) => q(v.aplicar(deEsteHotel(visibles(sb.from("novedades").select("id", { count: "exact", head: true }))))).then((r) => r.count ?? 0))]);
   const novs = soloVisibles(todas);
   const opt = (v, txt, sel) => `<option value="${esc(v)}" ${v === sel ? "selected" : ""}>${esc(txt)}</option>`;
+  const finos = [f.tipo, f.area, f.estado].filter(Boolean).length;
+  let dia = "";
+  const lista = novs.map((n) => {
+    const d = diaDe(n.creado_en), cab = d !== dia ? `<h3 class="dia">${esc(d)}</h3>` : "";
+    dia = d;
+    return cab + tarjetaNovedad(n);
+  }).join("");
 
   app.innerHTML = `<h1>Novedades</h1>
-    <form class="filtros" id="filtros">
-      <select name="estado" aria-label="Estado">${opt("activas", "Abiertas y en seguimiento", f.estado)}${opt("todas", "Todas", f.estado)}
-        ${Object.entries(EST_N).map(([k, v]) => opt(k, v, f.estado)).join("")}</select>
-      <select name="tipo" aria-label="Tipo">${opt("", "Todos los tipos", f.tipo)}${S.tipos.map((t) => opt(t.id, t.nombre, f.tipo)).join("")}</select>
-      <select name="urgencia" aria-label="Urgencia">${opt("", "Toda urgencia", f.urgencia)}${Object.entries(URG).map(([k, v]) => opt(k, v, f.urgencia)).join("")}</select>
-      <select name="area" aria-label="Área">${opt("", "Todas las áreas", f.area)}${S.areas.map((a) => opt(a.id, a.nombre, f.area)).join("")}</select>
-      <input class="todo" type="search" name="texto" placeholder="Buscar en descripción o lugar" value="${esc(f.texto)}">
+    <form id="filtros">
+      <input type="search" name="texto" class="buscar" placeholder="Buscar: 305, aire, cargador…" value="${esc(f.texto)}" aria-label="Buscar">
+      <div class="fichas" role="group" aria-label="Ver">
+        ${vistas.map(([k, v], i) => `<button type="button" class="ficha ${k === f.ver ? "activa" : ""}" data-ver="${k}" aria-pressed="${k === f.ver}">${v.nombre}${k !== "todas" ? ` · ${conteos[i]}` : ""}</button>`).join("")}
+      </div>
+      <details class="mas-filtros" ${finos ? "open" : ""}><summary>Más filtros${finos ? ` (${finos})` : ""}</summary>
+        <div class="filtros">
+          <select name="tipo" aria-label="Tipo">${opt("", "Todos los tipos", f.tipo)}${S.tipos.map((t) => opt(t.id, t.nombre, f.tipo)).join("")}</select>
+          <select name="area" aria-label="Área">${opt("", "Todas las áreas", f.area)}${S.areas.map((a) => opt(a.id, a.nombre, f.area)).join("")}</select>
+          <select name="estado" aria-label="Estado">${opt("", "Cualquier estado", f.estado)}${Object.entries(EST_N).map(([k, v]) => opt(k, v, f.estado)).join("")}</select>
+          ${finos ? `<a class="btn sec chico" href="#/novedades?ver=${f.ver}">Quitar filtros</a>` : ""}
+        </div>
+      </details>
     </form>
-    ${novs.length ? novs.map((n) => tarjetaNovedad(n)).join("") : `<p class="vacio">No hay novedades con estos filtros.</p>`}
-    ${count > todas.length ? `<div class="acciones"><button class="btn sec ancho" id="mas">Ver más (${count - todas.length})</button></div>` : ""}
-    <a class="btn flotante" href="#/nueva-novedad">+ Novedad</a>`;
+    ${novs.length ? lista : `<p class="vacio">No hay novedades aquí.</p>`}
+    ${count > todas.length ? `<div class="acciones"><button class="btn sec ancho" id="mas">Ver más (${count - todas.length})</button></div>` : ""}`;
 
   const form = document.getElementById("filtros");
   const aplicar = (extra = {}) => {
-    const p = new URLSearchParams();
+    const p = new URLSearchParams({ ver: f.ver });
     for (const [k, v] of new FormData(form)) if (v) p.set(k, v);
     for (const [k, v] of Object.entries(extra)) p.set(k, v);
     ir("novedades?" + p);
   };
   form.querySelectorAll("select").forEach((s) => s.addEventListener("change", () => aplicar()));
+  form.querySelectorAll("[data-ver]").forEach((b) => b.addEventListener("click", () => aplicar({ ver: b.dataset.ver })));
   form.addEventListener("submit", (e) => { e.preventDefault(); aplicar(); });
   alClic("#mas", () => aplicar({ n: f.n + 50 }));
 }
 
+// Nueva novedad en 3 pasos: qué pasó (tipo), dónde (lugar) y el detalle.
+// Urgencia y destino ya vienen puestos; se cambian en el último paso si hace falta.
 async function vNuevaNovedad() {
   const activos = S.tipos.filter((t) => t.activo);
   const enGrupo = S.grupo.length > 1;
-  app.innerHTML = `<h1>Nueva novedad</h1>
-    <form id="f-nov">
-      <label for="tipo">Tipo</label>
-      <select id="tipo" name="tipo" required>${activos.map((t) => `<option value="${t.id}">${esc(t.nombre)}</option>`).join("")}</select>
-      <label>Urgencia</label>
-      <div class="opciones" role="radiogroup">${Object.entries(URG).map(([k, v]) => `<label><input type="radio" name="urgencia" value="${k}"><span>${v}</span></label>`).join("")}</div>
-      <label>¿Para quién?</label>
-      <div class="opciones">
-        <label><input type="radio" name="para" value="hotel" checked><span>Todo el hotel</span></label>
-        <label><input type="radio" name="para" value="area"><span>Un área</span></label>
-        <label><input type="radio" name="para" value="persona"><span>Una persona</span></label>
+  // Los lugares más usados en el último mes, para elegirlos con un toque
+  const recientes = await q(sb.from("novedades").select("lugar").eq("hotel_id", S.hotel.id).not("lugar", "is", null)
+    .gte("creado_en", new Date(Date.now() - 30 * 864e5).toISOString()).order("creado_en", { ascending: false }).limit(300));
+  const usos = new Map();
+  for (const { lugar } of recientes) { const l = lugar.trim(); if (l) usos.set(l, (usos.get(l) ?? 0) + 1); }
+  const frecuentes = [...usos].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([l]) => l);
+
+  app.innerHTML = `<form id="f-nov" class="pasos-form">
+      <div class="pasos-cab">
+        <button type="button" class="btn sec chico" id="atras">← Atrás</button>
+        <span class="meta" id="paso-txt">Paso 1 de 3</span>
       </div>
-      <div id="para-area" hidden><label for="area">Área</label>
-        <select id="area" name="area">${S.areas.filter((a) => a.activa).map((a) => `<option value="${a.id}">${esc(a.nombre)}</option>`).join("")}</select></div>
-      <div id="para-persona" hidden><label for="persona">Persona</label>
-        <select id="persona" name="persona">${S.personas.filter((p) => p.activa).map((p) => `<option value="${p.id}">${esc(p.nombre)}${p.area_id ? " · " + esc(areaDe(p.area_id)) : ""}</option>`).join("")}</select></div>
-      <label for="lugar">Habitación o lugar <span class="ayuda">(opcional)</span></label>
-      <input id="lugar" name="lugar" type="text" maxlength="80">
-      <label for="descripcion">¿Qué pasó?</label>
-      <textarea id="descripcion" name="descripcion" required maxlength="4000"></textarea>
-      ${enGrupo ? `<label class="check"><input type="checkbox" name="grupo"> Compartir con ${esc(S.grupo.filter((h) => h.id !== S.hotel.id).map((h) => h.nombre).join(", "))}</label>` : ""}
-      <div class="acciones"><button class="btn" type="submit">Guardar novedad</button><a class="btn sec" href="#/inicio">Cancelar</a></div>
+      <div class="pasos" aria-hidden="true"><i class="on"></i><i></i><i></i></div>
+
+      <section data-paso="1">
+        <h1>¿Qué pasó?</h1>
+        <div class="grid-tipos">${activos.map((t) => `<label class="tipo-b" style="--tipo:${esc(t.color)}">
+          <input type="radio" name="tipo" value="${t.id}" required>${iconoTipo(t.nombre)}<span>${esc(t.nombre)}</span></label>`).join("")}</div>
+      </section>
+
+      <section data-paso="2" hidden>
+        <h1>¿Dónde?</h1>
+        ${frecuentes.length ? `<p class="meta">Los más usados</p>
+        <div class="lugares">${frecuentes.map((l) => `<button type="button" class="lugar-b" data-lugar="${esc(l)}">${esc(lugarTexto(l))}</button>`).join("")}</div>` : ""}
+        <label for="lugar">${frecuentes.length ? "Otro lugar o habitación" : "Habitación o lugar"}</label>
+        <input id="lugar" name="lugar" type="text" maxlength="80" placeholder="Ej: 204, piscina, cocina" enterkeyhint="next">
+        <div class="acciones"><button type="button" class="btn ancho" id="seguir-lugar">Seguir</button>
+          <button type="button" class="btn sec ancho" id="sin-lugar">No aplica un lugar</button></div>
+      </section>
+
+      <section data-paso="3" hidden>
+        <h1>Cuéntalo</h1>
+        <div class="resumen-nov" id="resumen"></div>
+        <label for="descripcion">¿Qué pasó? <span class="ayuda">(puedes dictar con el micrófono del teclado)</span></label>
+        <textarea id="descripcion" name="descripcion" required maxlength="4000"></textarea>
+        <label>Urgencia</label>
+        <div class="opciones" role="radiogroup">${Object.entries(URG).map(([k, v]) => `<label><input type="radio" name="urgencia" value="${k}"><span>${v}</span></label>`).join("")}</div>
+        <label>¿Para quién?</label>
+        <div class="opciones">
+          <label><input type="radio" name="para" value="hotel" checked><span>Todo el hotel</span></label>
+          <label><input type="radio" name="para" value="area"><span>Un área</span></label>
+          <label><input type="radio" name="para" value="persona"><span>Una persona</span></label>
+        </div>
+        <div id="para-area" hidden><label for="area">Área</label>
+          <select id="area" name="area">${S.areas.filter((a) => a.activa).map((a) => `<option value="${a.id}">${esc(a.nombre)}</option>`).join("")}</select></div>
+        <div id="para-persona" hidden><label for="persona">Persona</label>
+          <select id="persona" name="persona">${S.personas.filter((p) => p.activa).map((p) => `<option value="${p.id}">${esc(p.nombre)}${p.area_id ? " · " + esc(areaDe(p.area_id)) : ""}</option>`).join("")}</select></div>
+        ${enGrupo ? `<label class="check"><input type="checkbox" name="grupo"> Compartir con ${esc(S.grupo.filter((h) => h.id !== S.hotel.id).map((h) => h.nombre).join(", "))}</label>` : ""}
+        <div class="acciones"><button class="btn ancho" type="submit">Guardar novedad</button></div>
+      </section>
     </form>`;
   const f = document.getElementById("f-nov");
-  const ponerUrgencia = () => {
-    const t = activos.find((x) => x.id === f.tipo.value);
-    const r = f.querySelector(`input[name=urgencia][value=${t?.urgencia_defecto ?? "media"}]`);
-    if (r) r.checked = true;
+  let paso = 1;
+  const mostrar = (n) => {
+    paso = n;
+    f.querySelectorAll("[data-paso]").forEach((s) => (s.hidden = Number(s.dataset.paso) !== n));
+    f.querySelectorAll(".pasos i").forEach((b, i) => b.classList.toggle("on", i < n));
+    document.getElementById("paso-txt").textContent = `Paso ${n} de 3`;
+    document.getElementById("atras").textContent = n === 1 ? "Cancelar" : "← Atrás";
+    if (n === 3) {
+      const t = activos.find((x) => x.id === f.tipo.value);
+      const r = document.getElementById("resumen");
+      r.style.setProperty("--tipo", t?.color ?? "");
+      r.innerHTML = `${iconoTipo(t?.nombre)}<div><strong>${esc(t?.nombre ?? "")}</strong>
+        <div class="meta">${f.lugar.value.trim() ? esc(lugarTexto(f.lugar.value.trim())) : "Sin lugar"}</div></div>
+        <button type="button" class="btn sec chico" data-volver="1">Cambiar</button>`;
+      document.querySelector("[data-volver]").addEventListener("click", () => mostrar(1));
+      f.descripcion.focus();
+    } else if (n === 2 && !frecuentes.length) f.lugar.focus();
+    window.scrollTo(0, 0);
   };
-  f.tipo.addEventListener("change", ponerUrgencia);
-  ponerUrgencia();
+  document.getElementById("atras").addEventListener("click", () => (paso === 1 ? ir("inicio") : mostrar(paso - 1)));
+  f.querySelectorAll("input[name=tipo]").forEach((r) => r.addEventListener("change", () => {
+    const t = activos.find((x) => x.id === r.value);
+    const u = f.querySelector(`input[name=urgencia][value=${t?.urgencia_defecto ?? "media"}]`);
+    if (u) u.checked = true;
+    mostrar(2);
+  }));
+  f.querySelectorAll("[data-lugar]").forEach((b) => b.addEventListener("click", () => { f.lugar.value = b.dataset.lugar; mostrar(3); }));
+  document.getElementById("seguir-lugar").addEventListener("click", () => mostrar(3));
+  document.getElementById("sin-lugar").addEventListener("click", () => { f.lugar.value = ""; mostrar(3); });
+  f.lugar.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); mostrar(3); } });
   f.querySelectorAll("input[name=para]").forEach((r) => r.addEventListener("change", () => {
     document.getElementById("para-area").hidden = f.para.value !== "area";
     document.getElementById("para-persona").hidden = f.para.value !== "persona";
   }));
-  f.descripcion.focus();
   alEnviar(f, async (d) => {
     const desc = String(d.get("descripcion")).trim();
+    if (!d.get("tipo")) { mostrar(1); throw new Error("Elige qué pasó."); }
     if (!desc) throw new Error("Escribe qué pasó.");
     const para = d.get("para");
     const turno = turnoActual(S.area ?? (para === "area" ? d.get("area") : null));
@@ -555,13 +718,12 @@ async function vTareas(_, params) {
 
   const pest = [["mias", "Mías"], ["area", S.area ? areaDe(S.area) : "Sin asignar"], ["creadas", "Creadas por mí"], ...(alMenos("jefe_servicio") ? [["todas", "Todas"]] : [])];
   const enlace = (v, e) => `#/tareas?ver=${v}&estado=${e}`;
-  app.innerHTML = `<h1>Tareas</h1>
+  app.innerHTML = `<div class="fila entre"><h1>Tareas</h1><a class="btn chico" href="#/nueva-tarea">+ Tarea</a></div>
     <nav class="pestanas">${pest.map(([k, v]) => `<a href="${enlace(k, estado)}" class="${k === tab ? "activo" : ""}">${esc(v)}</a>`).join("")}</nav>
     <div class="filtros"><select id="estado" aria-label="Estado">
       ${[["activas", "Pendientes y en curso"], ["todas", "Todas"], ...Object.entries(EST_T)].map(([k, v]) => `<option value="${k}" ${k === estado ? "selected" : ""}>${v}</option>`).join("")}
     </select></div>
-    ${tareas.length ? tareas.map(tarjetaTarea).join("") : `<p class="vacio">No hay tareas aquí.</p>`}
-    <a class="btn flotante" href="#/nueva-tarea">+ Tarea</a>`;
+    ${tareas.length ? tareas.map(tarjetaTarea).join("") : `<p class="vacio">No hay tareas aquí.</p>`}`;
   document.getElementById("estado").addEventListener("change", (e) => (location.hash = enlace(tab, e.target.value)));
 }
 
@@ -1298,6 +1460,7 @@ async function arrancar() {
 }
 
 document.getElementById("btn-cuenta").addEventListener("click", abrirCuenta);
+document.getElementById("btn-mas").addEventListener("click", abrirMas);
 document.getElementById("btn-hotel").addEventListener("click", () => { if (S.membresias.length > 1) { S.hotel = null; ir("hotel"); } });
 window.addEventListener("hashchange", enrutar);
 sb.auth.onAuthStateChange((evento) => { if (evento === "SIGNED_OUT" && S.user) { S.user = null; S.hotel = null; ir("entrar"); } });
