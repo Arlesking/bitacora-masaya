@@ -407,7 +407,7 @@ function abrirMas() {
   const it = (ruta, icono, texto) => `<a class="hoja-it" href="#/${ruta}" data-cerrar><svg viewBox="0 0 24 24" aria-hidden="true">${icono}</svg>${texto}</a>`;
   const d = dialogo(`<div class="hoja-asa" data-cerrar></div><nav aria-label="Más opciones">
     ${usaModulo("checklist") ? it("checklist", `<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8l1.5 1.5L12 7M8 14l1.5 1.5L12 13M14 8.5h3M14 14.5h3"/>`, "Checklist") : ""}
-    ${todoElHotel() ? it("log", `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>`, "Registro de actividad") : ""}
+    ${alMenos("lider") ? it("log", `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>`, "Registro de actividad") : ""}
     ${pestanasAjustes().length ? it("admin", `<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>`, "Ajustes") : ""}
     <button class="hoja-it" type="button" id="mas-cuenta"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Mi cuenta y PIN</button>
     ${S.membresias.length > 1 ? `<button class="hoja-it" type="button" id="mas-hotel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/></svg>Cambiar de hotel</button>` : ""}
@@ -1544,7 +1544,7 @@ function describir(r) {
 }
 
 async function vLog(_, params) {
-  if (!todoElHotel()) throw new Error("El registro de actividad es solo para gerentes y administradores.");
+  if (!alMenos("lider")) throw new Error("El registro de actividad es solo para líderes, gerentes y administradores.");
   const hoy = new Date().toISOString().slice(0, 10);
   const f = { desde: params.get("desde") ?? new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10), hasta: params.get("hasta") ?? hoy, tabla: params.get("tabla") ?? "", persona: params.get("persona") ?? "" };
   const consulta = (lim) => {
@@ -1558,7 +1558,7 @@ async function vLog(_, params) {
   const filas = await q(consulta(300));
   const opt = (v, t, s) => `<option value="${esc(v)}" ${v === s ? "selected" : ""}>${esc(t)}</option>`;
   app.innerHTML = `<h1>Registro de actividad</h1>
-    <p class="meta">Todo lo que se crea o cambia queda aquí automáticamente y no se puede editar.</p>
+    <p class="meta">Todo lo que se crea o cambia queda aquí automáticamente y no se puede editar.${todoElHotel() ? "" : ` Ves lo que toca a ${esc(areasTexto(S.misAreas))}.`}</p>
     <form class="filtros" id="filtros">
       <input type="date" name="desde" value="${f.desde}" aria-label="Desde"><input type="date" name="hasta" value="${f.hasta}" aria-label="Hasta">
       <select name="tabla" aria-label="Qué">${opt("", "Todo", f.tabla)}${Object.entries(TABLA).map(([k, v]) => opt(k, v[0].toUpperCase() + v.slice(1), f.tabla)).join("")}</select>
