@@ -244,3 +244,5 @@ dialog.hoja { margin: auto auto 0; width: 100%; max-width: 520px; border-radius:
   background: none; color: var(--texto); font-weight: 600; text-decoration: none; text-align: left; cursor: pointer; }
 .hoja-it:last-child { border-bottom: 0; }
 .hoja-it svg { color: var(--marca); }
+.enlace { background: none; border: 0; padding: 10px 0; color: var(--marca); font-weight: 600; text-decoration: underline; cursor: pointer; }
+.opciones.apagado { opacity: .4; pointer-events: none; }
