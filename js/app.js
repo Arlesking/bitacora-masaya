@@ -48,7 +48,7 @@ async function q(promesa) {
     console.error(error);
     const m = error.message || "";
     if (/row-level security|permission denied/i.test(m)) throw new Error("No tienes permiso para hacer esto.");
-    if (/Failed to fetch|NetworkError/i.test(m)) throw new Error("Sin conexión. Revisa el internet e intenta de nuevo.");
+    if (esDeRed(error, 1)) throw new Error("Sin señal. Lo que ya cargaste se puede ver; intenta de nuevo cuando vuelva la señal.");
     throw new Error(m || "Algo salió mal.");
   }
   return count !== undefined && count !== null ? { data, count } : data;
@@ -120,7 +120,7 @@ function alEnviar(form, fn) {
 // ===== Estado =====
 const S = {
   user: null, perfil: null, membresias: [], hotel: null, rol: null, area: null, misAreas: [],
-  areas: [], tipos: [], personas: [], turnos: [], grupo: [], modulos: [],
+  areas: [], tipos: [], personas: [], turnos: [], grupo: [], modulos: [], sinSenal: !navigator.onLine,
 };
 // Un módulo se ve si está encendido en el hotel y la persona es gerente o de un área que lo usa.
 // La base de datos aplica la misma regla, así que ocultarlo aquí es solo para el menú.
@@ -136,9 +136,177 @@ const nombreDe = (id) => S.personas.find((p) => p.id === id)?.nombre ?? "—";
 const areaDe = (id) => S.areas.find((a) => a.id === id)?.nombre ?? "—";
 const hotelDe = (id) => S.grupo.find((h) => h.id === id)?.nombre ?? S.membresias.find((m) => m.hotel_id === id)?.hotel?.nombre ?? "otro hotel";
 
+// ===== Sin señal =====
+// Las novedades, los comentarios y las marcas del checklist se intentan enviar en el momento.
+// Si no hay señal quedan guardados en este celular como "pendientes de enviar" y salen solos,
+// en el mismo orden, cuando vuelve. Cada cosa lleva su id desde aquí: reintentar nunca la duplica.
+const uuid = () => crypto.randomUUID?.() ?? "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+  (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
+const colas = {};
+const colaClave = () => "pendientes:" + S.user?.id;
+function cola() {
+  const k = colaClave();
+  if (!colas[k]) { try { colas[k] = JSON.parse(localStorage.getItem(k) ?? "[]"); } catch { colas[k] = []; } }
+  return colas[k];
+}
+function guardarCola(c) {
+  colas[colaClave()] = c;
+  guardar(colaClave(), c.length ? JSON.stringify(c) : null);
+  pintarSenal();
+}
+const porEnviar = () => (S.user ? cola().filter((op) => !op.fallo) : []);
+
+// Fallas que se arreglan solas reintentando: sin señal, señal débil, sesión por renovar o el servidor caído un momento
+const esDeRed = (error, status) => !status || status === 401 || status >= 500 || /fetch|network|load failed|abort/i.test(error?.message ?? "");
+
+async function ejecutar(op) {
+  const paso = async (consulta, yaExisteOk = false) => {
+    const { data, error, status } = await consulta;
+    if (!error || (yaExisteOk && error.code === "23505")) return data;
+    throw Object.assign(new Error(error.message), { reintentar: esDeRed(error, status), status });
+  };
+  const d = op.datos;
+  // Lo que salió con retraso conserva la hora en que se escribió
+  const hora = op.guardada ? op.en : undefined;
+  if (op.tipo === "novedad") {
+    await paso(sb.from("novedades").insert({ ...d, creado_en: hora }), true);
+    await paso(sb.from("novedad_lecturas").upsert({ novedad_id: d.id, perfil_id: S.user.id }, { onConflict: "novedad_id,perfil_id", ignoreDuplicates: true }));
+  } else if (op.tipo === "comentario") {
+    await paso(sb.from("comentarios").insert({ id: d.id, novedad_id: d.novedad_id ?? null, tarea_id: d.tarea_id ?? null, autor_id: S.user.id, texto: d.texto, creado_en: hora }), true);
+    if (d.seguimiento) await paso(sb.from("novedades").update({ estado: "seguimiento" }).eq("id", d.novedad_id).eq("estado", "abierta"));
+  } else if (op.tipo === "marca") {
+    // El registro del día se crea con la primera marca
+    await paso(sb.from("checklist_registros").upsert({ plantilla_id: d.plantilla_id, fecha: d.fecha, turno_id: d.turno_id, abierto_por: S.user.id },
+      { onConflict: "plantilla_id,fecha,turno_id", ignoreDuplicates: true }));
+    const c = sb.from("checklist_registros").select("id").eq("plantilla_id", d.plantilla_id).eq("fecha", d.fecha);
+    const reg = await paso((d.turno_id ? c.eq("turno_id", d.turno_id) : c.is("turno_id", null)).single());
+    return paso(sb.from("checklist_marcas").upsert({ registro_id: reg.id, item_id: d.item_id, hecho: d.hecho, marcado_en: hora },
+      { onConflict: "registro_id,item_id" }).select("*").single());
+  }
+}
+
+// Envía ya si se puede; si no hay señal, lo deja guardado. Un error de permisos o de datos sí se muestra.
+// Si ya hay cosas esperando, lo nuevo va detrás de ellas para respetar el orden (p. ej. un comentario de una novedad sin enviar).
+async function enviarOGuardar(op) {
+  Object.assign(op, { id: uuid(), en: new Date().toISOString() });
+  if (!porEnviar().length && !S.sinSenal) {
+    try { return { resultado: await ejecutar(op) }; } catch (err) { if (!err.reintentar) throw err; }
+  }
+  op.guardada = true;
+  // Del mismo punto del checklist solo cuenta la última marca
+  const mismo = (x) => op.tipo === "marca" && x.tipo === "marca" && !x.fallo && ["plantilla_id", "fecha", "turno_id", "item_id"].every((k) => x.datos[k] === op.datos[k]);
+  guardarCola([...cola().filter((x) => !mismo(x)), op]);
+  S.sinSenal = true;
+  pintarSenal();
+  setTimeout(enviarPendientes, 0);
+  return { pendiente: true };
+}
+
+let enviando = null;
+function enviarPendientes() {
+  if (!S.user || enviando || !porEnviar().length) return enviando ?? Promise.resolve(0);
+  enviando = (async () => {
+    let enviadas = 0;
+    pintarSenal();
+    try {
+      // Sin sesión vigente (no se pudo renovar sin señal) todo saldría rechazado: se espera
+      const { data } = await sb.auth.getSession();
+      if (!data.session) return 0;
+      for (let op; (op = porEnviar()[0]);) {
+        try {
+          await ejecutar(op);
+          guardarCola(cola().filter((x) => x.id !== op.id));
+          enviadas++;
+        } catch (err) {
+          if (err.reintentar) { S.sinSenal = true; break; }
+          guardarCola(cola().map((x) => (x.id === op.id ? { ...x, fallo: err.message } : x)));
+        }
+      }
+    } catch { /* se reintenta en el próximo intento */ } finally { enviando = null; pintarSenal(); }
+    if (enviadas) {
+      aviso(enviadas === 1 ? "Listo: se envió lo que estaba pendiente." : `Listo: se enviaron las ${enviadas} cosas que estaban pendientes.`);
+      repintarSiSePuede();
+    }
+    return enviadas;
+  })();
+  return enviando;
+}
+
+// Tras enviar se vuelve a pintar la vista para quitar los "pendiente", salvo si la persona está escribiendo
+function repintarSiSePuede() {
+  const vista = location.hash.replace(/^#\/?/, "").split(/[/?]/)[0];
+  const escribiendo = [...app.querySelectorAll("textarea, input[type=text]")].some((el) => el.value.trim());
+  if (["inicio", "novedades", "novedad", "tarea", "checklist"].includes(vista) && !escribiendo && !document.querySelector("dialog")) enrutar();
+}
+
+const QUE = { novedad: "Novedad", comentario: "Comentario", marca: "Checklist" };
+function pintarSenal() {
+  const el = document.getElementById("senal");
+  const n = porEnviar().length, fallas = S.user ? cola().filter((op) => op.fallo).length : 0;
+  el.hidden = !S.user || (!n && !fallas && !S.sinSenal);
+  if (el.hidden) return;
+  const cosas = (k) => (k === 1 ? "1 cosa" : `${k} cosas`);
+  el.className = "senal" + (fallas ? " error" : "");
+  el.innerHTML = `<span class="senal-ico" aria-hidden="true">${enviando ? "↻" : fallas ? "!" : n ? "⏳" : "⚡"}</span>
+    <span>${fallas ? `<strong>${cosas(fallas)} no se pudo enviar.</strong> Toca para ver.`
+      : enviando ? `<strong>Enviando ${cosas(n)}…</strong>`
+      : n ? `<strong>${cosas(n)} por enviar.</strong> Está guardado en este celular y se envía solo cuando vuelva la señal.`
+      : `<strong>Sin señal.</strong> Puedes seguir anotando: se guarda en este celular.`}</span>`;
+}
+
+function abrirPendientes() {
+  const lista = cola();
+  if (!lista.length) { enviarPendientes(); return; }
+  const fila = (op) => `<div class="pend ${op.fallo ? "fallo" : ""}">
+      <div><strong>${QUE[op.tipo]}</strong> · ${fecha(op.en)}<div class="desc">${esc(op.resumen ?? "")}</div>
+      ${op.fallo ? `<div class="error-txt">No se pudo enviar: ${esc(op.fallo)}</div>` : ""}</div>
+      ${op.fallo ? `<div class="acciones"><button class="btn sec chico" data-reintentar="${op.id}">Reintentar</button>
+        <button class="btn peligro chico" data-descartar="${op.id}">Descartar</button></div>` : ""}
+    </div>`;
+  const d = dialogo(`<div><h2 style="margin-top:0">Guardado en este celular</h2>
+    <p class="ayuda">Se envía solo cuando vuelve la señal. No cierres sesión hasta que se envíe.</p>
+    ${lista.map(fila).join("")}
+    <div class="acciones"><button class="btn" id="p-enviar">Intentar enviar ahora</button><button class="btn sec" data-cerrar>Cerrar</button></div></div>`);
+  alClic("#p-enviar", async () => {
+    S.sinSenal = false;
+    await enviarPendientes();
+    d.close();
+    if (porEnviar().length) aviso("Todavía no hay señal. Se intentará otra vez solo.", true);
+  }, d);
+  alClic("[data-reintentar]", (b) => {
+    guardarCola(cola().map((x) => (x.id === b.dataset.reintentar ? { ...x, fallo: undefined } : x)));
+    d.close(); S.sinSenal = false; enviarPendientes();
+  }, d);
+  alClic("[data-descartar]", async (b) => {
+    if (!(await confirmar("Se borrará de este celular y no se enviará. No se puede deshacer.", { boton: "Descartar", peligro: true }))) return;
+    guardarCola(cola().filter((x) => x.id !== b.dataset.descartar));
+    d.close();
+  }, d);
+}
+
+// Lo escrito sin señal también se ve en la página mientras espera
+const novedadesPendientes = () => cola().filter((op) => op.tipo === "novedad" && op.datos.hotel_id === S.hotel.id).map((op) => ({
+  ...op.datos, creado_en: op.en, estado: "abierta", pendiente: true,
+  tipo: S.tipos.find((t) => t.id === op.datos.tipo_id), autor: { nombre: S.perfil.nombre },
+}));
+const comentariosPendientes = (campo, id) => cola().filter((op) => op.tipo === "comentario" && op.datos[campo] === id)
+  .map((op) => ({ ...op.datos, creado_en: op.en, autor: { nombre: S.perfil.nombre }, pendiente: true }));
+const comentarioHtml = (c) => `<div class="comentario"><div class="meta">${esc(c.autor?.nombre ?? "")} · ${c.pendiente ? `<span class="chip pend-chip">Pendiente de enviar</span>` : fecha(c.creado_en)}</div><div class="desc">${esc(c.texto)}</div></div>`;
+
+window.addEventListener("senal", (e) => {
+  const antes = S.sinSenal;
+  S.sinSenal = !e.detail;
+  if (antes !== S.sinSenal) pintarSenal();
+  if (antes && !S.sinSenal) enviarPendientes();
+});
+window.addEventListener("online", () => { S.sinSenal = false; enviarPendientes(); });
+window.addEventListener("offline", () => { S.sinSenal = true; pintarSenal(); });
+setInterval(() => { if (porEnviar().length) enviarPendientes(); }, 30000);
+
 async function cargarUsuario() {
   const { data: { session } } = await sb.auth.getSession();
-  S.user = session?.user ?? null;
+  // Sin señal la sesión no se puede renovar, pero sigue guardada: se usa para leer lo guardado y anotar
+  S.user = session?.user ?? sesionGuardada()?.user ?? null;
   if (!S.user) return false;
   S.perfil = await q(sb.from("perfiles").select("*").eq("id", S.user.id).single());
   if (S.perfil.es_admin_global) {
@@ -286,12 +454,22 @@ async function vEntrar() {
     guardar("correo", recordar ? correo : null);
     const otros = correosRecordados().filter((c) => c !== correo);
     guardar("correos", JSON.stringify((recordar ? [correo, ...otros] : otros).slice(0, 4)));
-    const { error } = await sb.auth.signInWithPassword({ email: correo, password: pin });
+    const { data, error } = await sb.auth.signInWithPassword({ email: correo, password: pin });
+    if (error && esDeRed(error, error.status)) {
+      // Sin señal solo puede volver a entrar quien ya estaba en este celular, con su mismo PIN
+      const r = await entrarSinSenal(correo, pin);
+      if (r === true) { guardar("bloqueada", null); return arrancar(); }
+      err.textContent = r;
+      err.hidden = false;
+      return;
+    }
     if (error) {
       err.textContent = /invalid/i.test(error.message) ? "Correo o PIN incorrecto." : "No se pudo entrar: " + error.message;
       err.hidden = false;
       return;
     }
+    await recordarPin(data.user, correo, pin);
+    guardar("bloqueada", null);
     await arrancar();
   });
 }
@@ -325,11 +503,59 @@ async function vElegirHotel() {
   alClic("#salir", salir);
 }
 
+// Cerrar sesión borra todo de este celular: la sesión, el PIN para entrar sin señal y los datos guardados.
+// Lo que quedó por enviar no se borra: sale cuando esa persona vuelva a entrar con señal.
 async function salir() {
-  guardar("actividad", null);
-  await sb.auth.signOut();
+  guardar("actividad", null); guardar("bloqueada", null); guardar("pin_local", null);
+  const { error } = await sb.auth.signOut();
+  if (error) { try { localStorage.removeItem(sb.auth.storageKey); } catch { /* sin almacenamiento */ } }
+  await borrarDatosGuardados();
   Object.assign(S, { user: null, perfil: null, membresias: [], hotel: null, rol: null });
+  pintarSenal();
   ir("entrar");
+}
+
+// Tras los minutos sin uso se pide el PIN otra vez, pero la sesión queda guardada en el celular
+// para poder volver a entrar aunque no haya señal (entrarSinSenal). Con señal, entrar la renueva.
+function bloquear() {
+  guardar("bloqueada", "1"); guardar("actividad", null);
+  Object.assign(S, { user: null, perfil: null, membresias: [], hotel: null, rol: null });
+  pintarSenal();
+  ir("entrar");
+}
+
+const sesionGuardada = () => { try { return JSON.parse(localStorage.getItem(sb.auth.storageKey)); } catch { return null; } };
+const borrarDatosGuardados = () => (window.caches ? caches.delete("bitacora-datos").catch(() => {}) : Promise.resolve());
+const aB64 = (b) => btoa(String.fromCharCode(...new Uint8Array(b)));
+async function huellaPin(pin, sal) {
+  const clave = await crypto.subtle.importKey("raw", new TextEncoder().encode(pin), "PBKDF2", false, ["deriveBits"]);
+  const sal8 = Uint8Array.from(atob(sal), (c) => c.charCodeAt(0));
+  return aB64(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: sal8, iterations: 200000 }, clave, 256));
+}
+// Solo se guarda una huella del PIN (no el PIN) para comprobarlo sin señal
+async function recordarPin(user, correo, pin) {
+  try {
+    const antes = JSON.parse(leer("pin_local") ?? "null");
+    // Si entra otra persona en este celular, no debe ver lo que quedó guardado de la anterior
+    if (antes?.uid !== user.id) await borrarDatosGuardados();
+    const sal = aB64(crypto.getRandomValues(new Uint8Array(16)));
+    guardar("pin_local", JSON.stringify({ uid: user.id, correo, sal, huella: await huellaPin(pin, sal), fallos: 0 }));
+  } catch { /* sin almacenamiento o sin cifrado: entrar sin señal no estará disponible */ }
+}
+async function entrarSinSenal(correo, pin) {
+  const local = JSON.parse(leer("pin_local") ?? "null");
+  const sesion = sesionGuardada();
+  if (!local || !sesion?.user || sesion.user.id !== local.uid || local.correo !== correo) {
+    return "No hay señal. Sin señal solo puede entrar quien entró por última vez en este celular. Intenta cuando vuelva la señal.";
+  }
+  if ((await huellaPin(pin, local.sal)) === local.huella) {
+    guardar("pin_local", JSON.stringify({ ...local, fallos: 0 }));
+    return true;
+  }
+  // Tras 5 intentos fallidos ya no se puede entrar sin señal: hay que esperar la señal
+  const fallos = (local.fallos ?? 0) + 1;
+  guardar("pin_local", fallos >= 5 ? null : JSON.stringify({ ...local, fallos }));
+  return fallos >= 5 ? "PIN incorrecto. Por seguridad, ahora hay que entrar con señal." : "PIN incorrecto.";
 }
 
 // ===== Tarjetas =====
@@ -375,7 +601,7 @@ function tarjetaNovedad(n, noLeida = false) {
     <div class="cuerpo">
       <div class="fila entre"><span class="titulo">${noLeida ? `<span class="punto" title="Sin leer"></span>` : ""}${esc(n.lugar ? lugarTexto(n.lugar) : tipo)}</span>
         <span class="fila">${urgente ? `<span class="urg">${URG[n.urgencia]}</span>` : ""}
-        ${n.estado !== "abierta" ? `<span class="chip estado">${EST_N[n.estado]}</span>` : ""}
+        ${n.pendiente ? `<span class="chip pend-chip">Pendiente de enviar</span>` : n.estado !== "abierta" ? `<span class="chip estado">${EST_N[n.estado]}</span>` : ""}
         ${n.hotel_id !== S.hotel.id ? `<span class="chip grupo">${esc(hotelDe(n.hotel_id))}</span>` : n.compartida_grupo ? `<span class="chip grupo">Compartida</span>` : ""}</span></div>
       <p class="desc">${esc(n.descripcion.length > 160 ? n.descripcion.slice(0, 160) + "…" : n.descripcion)}</p>
       <div class="meta">${n.lugar ? esc(tipo) + " · " : ""}${esc(n.autor?.nombre ?? "Alguien")} · ${fecha(n.creado_en)} · ${esc(paraTexto(n))}</div>
@@ -571,7 +797,9 @@ async function vInicio() {
   const total = checklist?.listas.reduce((n, p) => n + p.items.length, 0) ?? 0;
   const hechos = checklist?.listas.reduce((n, p) => n + hechosDe(p), 0) ?? 0;
   const hora = (h) => h.slice(0, 5);
+  const pendientes = novedadesPendientes();
   app.innerHTML = `<h1>Hola, ${esc(S.perfil.nombre.split(" ")[0])}</h1>
+    ${pendientes.length ? `<h2>Por enviar (${pendientes.length})</h2>${pendientes.map((n) => tarjetaNovedad(n)).join("")}` : ""}
     ${turno || total ? `<div class="turno-banda">
       <span>${turno ? `Turno <strong>${esc(turno.nombre)}</strong> · ${hora(turno.hora_inicio)} a ${hora(turno.hora_fin)}` : "Checklist del turno"}</span>
       ${total ? `<a href="#/checklist" class="progreso" aria-label="Checklist: ${hechos} de ${total}">${hechos}/${total}<span class="barra-prog"><i style="width:${Math.round(hechos / total * 100)}%"></i></span></a>` : ""}
@@ -640,6 +868,7 @@ async function vNovedades(_, params) {
   const [{ data: todas, count }, ...conteos] = await Promise.all([q(c),
     ...vistas.map(([, v]) => q(v.aplicar(deEsteHotel(visibles(sb.from("novedades").select("id", { count: "exact", head: true }))))).then((r) => r.count ?? 0))]);
   const novs = soloVisibles(todas);
+  const pendientes = novedadesPendientes();
   const opt = (v, txt, sel) => `<option value="${esc(v)}" ${v === sel ? "selected" : ""}>${esc(txt)}</option>`;
   const finos = [f.tipo, f.area, f.estado].filter(Boolean).length;
   let dia = "";
@@ -664,7 +893,8 @@ async function vNovedades(_, params) {
         </div>
       </details>
     </form>
-    ${novs.length ? lista : `<p class="vacio">No hay novedades aquí.</p>`}
+    ${pendientes.length ? `<h3 class="dia">Por enviar</h3>${pendientes.map((n) => tarjetaNovedad(n)).join("")}` : ""}
+    ${novs.length ? lista : pendientes.length ? "" : `<p class="vacio">No hay novedades aquí.</p>`}
     ${count > todas.length ? `<div class="acciones"><button class="btn sec ancho" id="mas">Ver más (${count - todas.length})</button></div>` : ""}`;
 
   const form = document.getElementById("filtros");
@@ -766,38 +996,40 @@ async function vNuevaNovedad() {
     const areas = persona ? [] : d.getAll("areas");
     const turno = turnoActual(S.area ?? areas[0] ?? null);
     const fila = {
-      hotel_id: S.hotel.id, autor_id: S.user.id, tipo_id: d.get("tipo"), urgencia: d.get("urgencia"),
+      id: uuid(), hotel_id: S.hotel.id, autor_id: S.user.id, tipo_id: d.get("tipo"), urgencia: d.get("urgencia"),
       para_area_id: areas[0] ?? null, para_areas: areas.length ? areas : null, para_perfil_id: persona,
       lugar: String(d.get("lugar") ?? "").trim() || null, descripcion: desc, compartida_grupo: d.get("grupo") === "on",
       turno_id: turno?.id ?? null,
     };
-    const n = await q(sb.from("novedades").insert(fila).select("id").single());
-    await q(sb.from("novedad_lecturas").insert({ novedad_id: n.id, perfil_id: S.user.id }));
-    aviso("Novedad guardada.");
-    ir("novedad/" + n.id);
+    const r = await enviarOGuardar({ tipo: "novedad", datos: fila, resumen: desc.slice(0, 120) });
+    aviso(r.pendiente ? "Sin señal: la novedad quedó guardada en este celular y se enviará sola." : "Novedad guardada.");
+    ir("novedad/" + fila.id);
   });
 }
 
 async function vNovedad([id]) {
-  const [n, coms, lecturas, tareas] = await Promise.all([
+  // Una novedad escrita sin señal se muestra desde este celular hasta que se envíe
+  const local = novedadesPendientes().find((x) => x.id === id);
+  const [n, comsServidor, lecturas, tareas] = local ? [local, [], [], []] : await Promise.all([
     q(sb.from("novedades").select(SEL_NOV + ", turno:turnos(nombre)").eq("id", id).maybeSingle()),
     q(sb.from("comentarios").select("*, autor:perfiles(nombre)").eq("novedad_id", id).order("creado_en")),
     q(sb.from("novedad_lecturas").select("perfil_id, leido_en, perfil:perfiles(nombre)").eq("novedad_id", id).order("leido_en")),
     q(sb.from("tareas").select(SEL_TAR).eq("novedad_id", id)),
   ]);
   if (!n) throw new Error("Esta novedad no existe o no tienes acceso a ella.");
-  if (!lecturas.some((l) => l.perfil_id === S.user.id)) {
+  const coms = [...comsServidor, ...comentariosPendientes("novedad_id", id)];
+  if (!local && !lecturas.some((l) => l.perfil_id === S.user.id)) {
     sb.from("novedad_lecturas").upsert({ novedad_id: id, perfil_id: S.user.id }, { onConflict: "novedad_id,perfil_id", ignoreDuplicates: true }).then(() => {});
   }
   const propia = n.hotel_id === S.hotel.id;
-  const puedeEditar = propia && (n.autor_id === S.user.id || alMenos("jefe_servicio"));
+  const puedeEditar = !local && propia && (n.autor_id === S.user.id || alMenos("jefe_servicio"));
   const color = n.tipo?.color ?? "#6b7280";
   const tareasAbiertas = tareas.filter((t) => ["pendiente", "en_curso"].includes(t.estado)).length;
 
   app.innerHTML = `<p><a href="#/novedades">← Novedades</a></p>
     <div class="tarjeta borde-tipo ${n.estado === "anulada" ? "anulada" : ""}" style="--tipo:${esc(color)}">
       <div class="fila"><span class="chip tipo">${esc(n.tipo?.nombre ?? "")}</span><span class="chip u-${n.urgencia}">${URG[n.urgencia]}</span>
-        <span class="chip estado">${EST_N[n.estado]}</span>
+        ${local ? `<span class="chip pend-chip">Pendiente de enviar</span>` : `<span class="chip estado">${EST_N[n.estado]}</span>`}
         ${!propia ? `<span class="chip grupo">${esc(hotelDe(n.hotel_id))}</span>` : n.compartida_grupo ? `<span class="chip grupo">Compartida con el grupo</span>` : ""}</div>
       <p class="desc" style="font-size:1.05rem">${esc(n.descripcion)}</p>
       <div class="meta">${esc(n.autor?.nombre ?? "")} · ${fmtFecha.format(new Date(n.creado_en))}${n.turno ? " · turno " + esc(n.turno.nombre) : ""}</div>
@@ -812,8 +1044,9 @@ async function vNovedad([id]) {
       <button class="btn peligro chico" id="anular">Anular</button></div>
       ${tareasAbiertas && n.estado !== "cerrada" ? `<p class="ayuda">No se puede cerrar todavía: tiene ${tareasAbiertas} ${tareasAbiertas === 1 ? "tarea abierta" : "tareas abiertas"}. Se cerrará sola cuando se terminen.</p>` : ""}` : ""}
     ${tareas.length ? `<h2>Tareas creadas desde esta novedad</h2>${tareas.map(tarjetaTarea).join("")}` : ""}
+    ${local ? `<p class="ayuda">Guardada en este celular. Se enviará sola cuando vuelva la señal; después podrás cambiarle el estado o convertirla en tarea.</p>` : ""}
     <h2>Seguimiento (${coms.length})</h2>
-    ${coms.map((c) => `<div class="comentario"><div class="meta">${esc(c.autor?.nombre ?? "")} · ${fecha(c.creado_en)}</div><div class="desc">${esc(c.texto)}</div></div>`).join("") || `<p class="meta">Sin comentarios todavía.</p>`}
+    ${coms.map(comentarioHtml).join("") || `<p class="meta">Sin comentarios todavía.</p>`}
     ${n.estado !== "anulada" ? `<form id="f-com"><label for="texto">Agregar seguimiento</label><textarea id="texto" name="texto" required maxlength="2000" style="min-height:80px"></textarea>
       <div class="acciones"><button class="btn" type="submit">Comentar</button></div></form>` : ""}
     ${alMenos("jefe_servicio") && propia ? `<h2>Leída por (${lecturas.length})</h2>
@@ -833,8 +1066,9 @@ async function vNovedad([id]) {
   if (fc) alEnviar(fc, async (d) => {
     const texto = String(d.get("texto")).trim();
     if (!texto) return;
-    await q(sb.from("comentarios").insert({ novedad_id: id, autor_id: S.user.id, texto }));
-    if (puedeEditar && n.estado === "abierta") await q(sb.from("novedades").update({ estado: "seguimiento" }).eq("id", id));
+    const r = await enviarOGuardar({ tipo: "comentario", resumen: texto.slice(0, 120),
+      datos: { id: uuid(), novedad_id: id, texto, seguimiento: puedeEditar && n.estado === "abierta" } });
+    if (r.pendiente) aviso("Sin señal: el comentario quedó guardado en este celular y se enviará solo.");
     vNovedad([id]);
   });
 }
@@ -929,11 +1163,12 @@ async function vNuevaTarea(_, params) {
 }
 
 async function vTarea([id]) {
-  const [t, coms] = await Promise.all([
+  const [t, comsServidor] = await Promise.all([
     q(sb.from("tareas").select(SEL_TAR + ", novedad:novedades(id, descripcion)").eq("id", id).maybeSingle()),
     q(sb.from("comentarios").select("*, autor:perfiles(nombre)").eq("tarea_id", id).order("creado_en")),
   ]);
   if (!t) throw new Error("Esta tarea no existe o no tienes acceso a ella.");
+  const coms = [...comsServidor, ...comentariosPendientes("tarea_id", id)];
   const propia = t.hotel_id === S.hotel.id;
   // Asigna y cancela el jefe o líder del área de la tarea, o el gerente
   const jefe = propia && nivel(rolEnArea(t.area_id)) >= nivel("jefe_servicio");
@@ -964,7 +1199,7 @@ async function vTarea([id]) {
       ${puedeMover && !abierta ? `<button class="btn sec" data-estado="pendiente">Reabrir</button>` : ""}
     </div>
     <h2>Comentarios (${coms.length})</h2>
-    ${coms.map((c) => `<div class="comentario"><div class="meta">${esc(c.autor?.nombre ?? "")} · ${fecha(c.creado_en)}</div><div class="desc">${esc(c.texto)}</div></div>`).join("") || `<p class="meta">Sin comentarios todavía.</p>`}
+    ${coms.map(comentarioHtml).join("") || `<p class="meta">Sin comentarios todavía.</p>`}
     <form id="f-com"><label for="texto">Agregar comentario</label><textarea id="texto" name="texto" required maxlength="2000" style="min-height:80px"></textarea>
       <div class="acciones"><button class="btn" type="submit">Comentar</button></div></form>`;
 
@@ -1001,7 +1236,8 @@ async function vTarea([id]) {
   alEnviar(document.getElementById("f-com"), async (d) => {
     const texto = String(d.get("texto")).trim();
     if (!texto) return;
-    await q(sb.from("comentarios").insert({ tarea_id: id, autor_id: S.user.id, texto }));
+    const r = await enviarOGuardar({ tipo: "comentario", resumen: texto.slice(0, 120), datos: { id: uuid(), tarea_id: id, texto } });
+    if (r.pendiente) aviso("Sin señal: el comentario quedó guardado en este celular y se enviará solo.");
     vTarea([id]);
   });
 }
@@ -1030,17 +1266,16 @@ async function checklistDelTurno(areaId) {
     ? await q(sb.from("checklist_registros").select("*, marcas:checklist_marcas(*)").in("plantilla_id", listas.map((p) => p.id)).eq("fecha", fecha))
     : [];
   for (const p of listas) p.registro = regs.find((r) => r.plantilla_id === p.id && r.turno_id === p.turnoReg) ?? null;
+  // Las marcas hechas sin señal se ven como hechas mientras esperan
+  for (const op of porEnviar()) {
+    const d = op.datos, p = op.tipo === "marca" && d.fecha === fecha && listas.find((x) => x.id === d.plantilla_id && x.turnoReg === d.turno_id);
+    if (!p) continue;
+    p.registro ??= { marcas: [] };
+    p.registro.marcas = [...p.registro.marcas.filter((m) => m.item_id !== d.item_id), { item_id: d.item_id, hecho: d.hecho, marcado_por: S.user.id, marcado_en: op.en, pendiente: true }];
+  }
   return { turno, fecha, listas };
 }
 const hechosDe = (p) => p.items.filter((i) => p.registro?.marcas.some((m) => m.item_id === i.id && m.hecho)).length;
-
-// El registro del día se crea con la primera marca
-async function abrirRegistro(p, fecha) {
-  await q(sb.from("checklist_registros").upsert({ plantilla_id: p.id, fecha, turno_id: p.turnoReg, abierto_por: S.user.id },
-    { onConflict: "plantilla_id,fecha,turno_id", ignoreDuplicates: true }));
-  const c = sb.from("checklist_registros").select("*, marcas:checklist_marcas(*)").eq("plantilla_id", p.id).eq("fecha", fecha);
-  return q((p.turnoReg ? c.eq("turno_id", p.turnoReg) : c.is("turno_id", null)).single());
-}
 
 async function vChecklist(_, params) {
   if (!usaModulo("checklist")) throw new Error("El checklist no está activo para tu área.");
@@ -1065,6 +1300,7 @@ async function vChecklist(_, params) {
 }
 
 function textoMarca(m) {
+  if (m?.pendiente) return `${m.hecho ? "Hecho" : "Desmarcado"} por ti · <span class="chip pend-chip">Pendiente de enviar</span>`;
   return m ? `${m.hecho ? "Hecho" : "Desmarcado"} por ${esc(quien(m.marcado_por))} · ${fecha(m.marcado_en)}` : "";
 }
 
@@ -1090,9 +1326,11 @@ async function clTurno(cl, areaId) {
     const p = listas.find((x) => x.id === caja.dataset.lista);
     cb.disabled = true;
     try {
-      if (!p.registro) p.registro = await abrirRegistro(p, f);
-      const m = await q(sb.from("checklist_marcas").upsert({ registro_id: p.registro.id, item_id: cb.dataset.item, hecho: cb.checked },
-        { onConflict: "registro_id,item_id" }).select("*").single());
+      const punto = p.items.find((i) => i.id === cb.dataset.item);
+      const r = await enviarOGuardar({ tipo: "marca", resumen: `${cb.checked ? "Marcó" : "Desmarcó"} "${punto?.texto ?? ""}" en ${p.nombre}`,
+        datos: { plantilla_id: p.id, fecha: f, turno_id: p.turnoReg, item_id: cb.dataset.item, hecho: cb.checked } });
+      const m = r.resultado ?? { item_id: cb.dataset.item, hecho: cb.checked, marcado_por: S.user.id, marcado_en: new Date().toISOString(), pendiente: true };
+      p.registro ??= { marcas: [] };
       p.registro.marcas = [...p.registro.marcas.filter((x) => x.item_id !== m.item_id), m];
       cb.closest(".punto-check").querySelector("[data-quien]").innerHTML = textoMarca(m);
       const hechos = hechosDe(p), prog = caja.querySelector("[data-progreso]");
@@ -1657,11 +1895,16 @@ function abrirCuenta() {
     const pin = String(f.get("pin"));
     if (!/^\d{6}$/.test(pin)) throw new Error("El PIN debe tener 6 dígitos.");
     const { error } = await sb.auth.updateUser({ password: pin });
-    if (error) throw new Error(/different/i.test(error.message) ? "Ese ya es tu PIN." : error.message);
+    if (error) throw new Error(/different/i.test(error.message) ? "Ese ya es tu PIN." : esDeRed(error, error.status) ? "Para cambiar el PIN hace falta señal." : error.message);
+    await recordarPin(S.user, S.perfil.correo, pin);
     d.close(); aviso("PIN cambiado.");
   });
   alClic("#c-hotel", () => { d.close(); S.hotel = null; ir("hotel"); }, d);
-  alClic("#c-salir", async () => { d.close(); await salir(); }, d);
+  alClic("#c-salir", async () => {
+    const n = porEnviar().length;
+    if (n && !(await confirmar(`Tienes ${n === 1 ? "1 cosa" : n + " cosas"} sin enviar. Quedan guardadas en este celular y se enviarán cuando vuelvas a entrar con señal.`, { boton: "Cerrar sesión igual" }))) return;
+    d.close(); await salir();
+  }, d);
 }
 
 // La sesión se cierra tras MIN_INACTIVIDAD minutos sin uso, en cualquier dispositivo.
@@ -1676,8 +1919,8 @@ function inactivo() {
 async function revisarInactividad() {
   if (S.user && inactivo()) {
     document.querySelectorAll("dialog").forEach((d) => d.close());
-    await salir();
-    aviso(`Se cerró la sesión tras ${MIN_INACTIVIDAD} minutos sin uso.`);
+    bloquear();
+    aviso(`Se pidió el PIN otra vez tras ${MIN_INACTIVIDAD} minutos sin uso.`);
   }
 }
 ["click", "keydown", "touchstart", "scroll"].forEach((ev) => document.addEventListener(ev, marcarActividad, { passive: true }));
@@ -1687,14 +1930,20 @@ setInterval(revisarInactividad, 20000);
 // ===== Arranque =====
 async function arrancar() {
   // Si la última vez se dejó abierta y pasó el tiempo, se pide el PIN otra vez
-  if (inactivo()) { await sb.auth.signOut(); guardar("actividad", null); }
+  if (inactivo()) { guardar("bloqueada", "1"); guardar("actividad", null); }
+  // Si ya se está en la entrada, ir() no cambia la dirección y hay que pintarla aquí
+  const aEntrar = () => (location.hash === "#/entrar" ? enrutar() : ir("entrar"));
+  if (leer("bloqueada")) return aEntrar();
   try {
-    // Si ya se está en la entrada, ir() no cambia la dirección y hay que pintarla aquí
-    if (!(await cargarUsuario())) return location.hash === "#/entrar" ? enrutar() : ir("entrar");
+    if (!(await cargarUsuario())) return aEntrar();
   } catch (err) {
+    S.user = null;
+    if (/Sin señal/.test(err.message)) {
+      aviso("Sin señal, y este celular todavía no tiene tus datos guardados. Abre la página una vez con señal.", true);
+      return aEntrar();
+    }
     aviso(err.message, true);
     await sb.auth.signOut();
-    S.user = null;
     return ir("entrar");
   }
   let guardado = null;
@@ -1706,12 +1955,23 @@ async function arrancar() {
   if (!S.hotel) ir("hotel");
   else if (!destino || ["entrar", "hotel"].includes(destino)) ir("inicio");
   else enrutar();
+  pintarSenal();
+  enviarPendientes();
 }
 
 document.getElementById("btn-cuenta").addEventListener("click", abrirCuenta);
+document.getElementById("senal").addEventListener("click", abrirPendientes);
 document.getElementById("btn-mas").addEventListener("click", abrirMas);
 document.querySelector("#menu .nueva").addEventListener("click", abrirNueva);
 document.getElementById("btn-hotel").addEventListener("click", () => { if (S.membresias.length > 1) { S.hotel = null; ir("hotel"); } });
 window.addEventListener("hashchange", enrutar);
 sb.auth.onAuthStateChange((evento) => { if (evento === "SIGNED_OUT" && S.user) { S.user = null; S.hotel = null; ir("entrar"); } });
 arrancar();
+
+// Para abrir la página sin señal (sw.js). Se le pasa la librería de Supabase ya cargada para que la guarde.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").then(() => navigator.serviceWorker.ready).then((reg) => {
+    const urls = performance.getEntriesByType("resource").map((r) => r.name).filter((u) => u.startsWith("https://cdn.jsdelivr.net/"));
+    reg.active?.postMessage({ tipo: "guardar", urls });
+  }).catch(() => { /* sin esto la página funciona igual, solo que no abre sin señal */ });
+}
