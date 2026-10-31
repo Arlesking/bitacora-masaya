@@ -121,6 +121,13 @@ input[type=text], input[type=email], input[type=password], input[type=search], i
 input[type=color] { padding: 4px; width: 64px; }
 textarea { min-height: 110px; resize: vertical; }
 input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible { outline: 3px solid color-mix(in srgb, var(--marca) 35%, transparent); outline-offset: 1px; }
+.con-x { position: relative; }
+.con-x input { padding-right: 48px; }
+.con-x input::-webkit-calendar-picker-indicator { display: none !important; }
+.borrar-x { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 40px; height: 40px; border: 0; border-radius: 50%; background: transparent; color: var(--suave); display: grid; place-items: center; cursor: pointer; }
+.borrar-x[hidden] { display: none; }
+.borrar-x:hover { background: var(--borde); }
+.borrar-x svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
 .pin { letter-spacing: .5em; font-size: 1.3rem; text-align: center; }
 .check { display: flex; align-items: center; gap: 10px; font-weight: 400; margin: 14px 0; }
 .check input { width: 22px; height: 22px; }
