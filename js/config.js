@@ -4,4 +4,4 @@ export const SUPABASE_URL = "https://suxoaodgoyempshuohfv.supabase.co";
 export const SUPABASE_KEY = "sb_publishable_FL0YKNeZFjd7YK8rSIn7nw_RzsyTy6k";
 
 // Microsoft Clarity (medir qué se usa). Vacío = apagado. El ID sale en clarity.microsoft.com → Settings → Overview.
-export const CLARITY_ID = "";
+export const CLARITY_ID = "z63nljyeoc";
