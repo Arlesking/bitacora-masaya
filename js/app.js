@@ -416,7 +416,11 @@ async function vEntrar() {
     <div class="logo"><svg viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M9 9h6M9 13h6"/></svg>Bitácora Masaya</div>
     <form id="f-entrar" novalidate>
       <label for="correo">Correo</label>
-      <input id="correo" name="correo" type="email" autocomplete="username" required>
+      <div class="con-x">
+        <input id="correo" name="correo" type="email" autocomplete="username" list="correos-recordados" required>
+        <button type="button" class="borrar-x" id="borrar-correo" aria-label="Borrar correo" hidden><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <datalist id="correos-recordados">${correosRecordados().map((c) => `<option value="${esc(c)}">`).join("")}</datalist>
       <label for="pin">PIN <span class="ayuda">(6 dígitos)</span></label>
       <input id="pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="current-password" class="pin" required>
       <label class="check"><input type="checkbox" id="ver-pin"> Mostrar el PIN mientras lo escribo</label>
@@ -429,6 +433,16 @@ async function vEntrar() {
   </div>`;
   const f = document.getElementById("f-entrar");
   f.correo.value = leer("correo") ?? "";
+  const borrarX = f.querySelector("#borrar-correo");
+  const verX = () => (borrarX.hidden = !f.correo.value);
+  f.correo.addEventListener("input", verX);
+  verX();
+  borrarX.addEventListener("click", () => {
+    f.correo.value = "";
+    f.pin.value = "";
+    verX();
+    f.correo.focus();
+  });
   f.querySelector("#ver-pin").addEventListener("change", (e) => (f.pin.type = e.target.checked ? "text" : "password"));
   (f.correo.value ? f.pin : f.correo).focus();
   alEnviar(f, async (d) => {
@@ -436,7 +450,10 @@ async function vEntrar() {
     err.hidden = true;
     const correo = String(d.get("correo")).trim().toLowerCase(), pin = String(d.get("pin")).trim();
     if (!correo || !/^\d{6}$/.test(pin)) { err.textContent = "Escribe tu correo y un PIN de 6 dígitos."; err.hidden = false; return; }
-    guardar("correo", d.get("recordar") === "on" ? correo : null);
+    const recordar = d.get("recordar") === "on";
+    guardar("correo", recordar ? correo : null);
+    const otros = correosRecordados().filter((c) => c !== correo);
+    guardar("correos", JSON.stringify((recordar ? [correo, ...otros] : otros).slice(0, 4)));
     const { data, error } = await sb.auth.signInWithPassword({ email: correo, password: pin });
     if (error && esDeRed(error, error.status)) {
       // Sin señal solo puede volver a entrar quien ya estaba en este celular, con su mismo PIN
@@ -455,6 +472,15 @@ async function vEntrar() {
     guardar("bloqueada", null);
     await arrancar();
   });
+}
+
+// Correos que se marcaron para recordar en este dispositivo (el navegador los sugiere al escribir).
+function correosRecordados() {
+  try {
+    const lista = JSON.parse(leer("correos") ?? "[]");
+    if (Array.isArray(lista) && lista.length) return lista;
+  } catch { /* valor dañado */ }
+  return leer("correo") ? [leer("correo")] : [];
 }
 
 async function vElegirHotel() {
@@ -910,6 +936,7 @@ async function vNuevaNovedad() {
         <input id="lugar" name="lugar" type="text" maxlength="80" placeholder="Ej: 204, piscina, cocina">
         <label for="descripcion">¿Qué pasó? <span class="ayuda">(puedes dictar con el micrófono del teclado)</span></label>
         <textarea id="descripcion" name="descripcion" required maxlength="4000"></textarea>
+        <p class="nota-datos">Del huésped anota solo lo necesario. Cédula o teléfono, únicamente si hacen falta para resolver.</p>
         <label>Urgencia</label>
         <div class="opciones" role="radiogroup">${Object.entries(URG).map(([k, v]) => `<label><input type="radio" name="urgencia" value="${k}"><span>${v}</span></label>`).join("")}</div>
         <label>¿Quién debe enterarse? <span class="ayuda">(puedes tocar varias)</span></label>
