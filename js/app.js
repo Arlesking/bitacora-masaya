@@ -1,4 +1,5 @@
 import { sb } from "./sb.js";
+import { medirPantalla, medirContexto } from "./medicion.js";
 
 // ===== Utilidades =====
 const ORDEN = ["operador", "jefe_servicio", "lider", "gerente", "admin"];
@@ -156,6 +157,7 @@ async function entrarAlHotel(id) {
   const m = S.membresias.find((x) => x.hotel_id === id);
   if (!m) return false;
   S.hotel = m.hotel; S.rol = m.rol; S.area = m.area_id ?? null;
+  medirContexto(S.hotel, S.rol);
   S.misAreas = m.areas?.length ? m.areas : S.area ? [S.area] : [];
   try { localStorage.setItem("hotel", id); } catch { /* sin almacenamiento */ }
   const [areas, tipos, personas, grupo, modulos] = await Promise.all([
@@ -225,6 +227,7 @@ async function enrutar() {
     || (a.dataset.ruta === "tareas" && nombre === "tarea")
     || (a.dataset.ruta === "nueva-novedad" && nombre === "nueva-tarea")
     || (a.dataset.ruta === "mas" && ["checklist", "admin", "log"].includes(nombre))));
+  medirPantalla(nombre);
   if (S.hotel && nombre !== "inicio") refrescarInsignias();
   app.innerHTML = `<p class="cargando">Cargando…</p>`;
   try {
