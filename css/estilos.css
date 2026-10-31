@@ -114,6 +114,7 @@ a.tarjeta:hover { border-color: var(--marca); }
 /* Formularios */
 label { display: block; font-weight: 600; font-size: .9rem; margin: 14px 0 6px; }
 .ayuda { font-weight: 400; color: var(--suave); font-size: .82rem; }
+.nota-datos { margin: .3rem 0 0; color: var(--suave); font-size: .75rem; }
 input[type=text], input[type=email], input[type=password], input[type=search], input[type=time], input[type=datetime-local], input[type=date], input[type=color], select, textarea {
   width: 100%; padding: 11px 12px; border: 1px solid var(--borde); border-radius: 10px; background: var(--superficie); min-height: 46px;
 }

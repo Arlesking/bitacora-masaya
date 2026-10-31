@@ -680,6 +680,7 @@ async function vNuevaNovedad() {
         <input id="lugar" name="lugar" type="text" maxlength="80" placeholder="Ej: 204, piscina, cocina">
         <label for="descripcion">¿Qué pasó? <span class="ayuda">(puedes dictar con el micrófono del teclado)</span></label>
         <textarea id="descripcion" name="descripcion" required maxlength="4000"></textarea>
+        <p class="nota-datos">Del huésped basta el nombre o la habitación. No anotes cédulas, teléfonos ni datos de salud.</p>
         <label>Urgencia</label>
         <div class="opciones" role="radiogroup">${Object.entries(URG).map(([k, v]) => `<label><input type="radio" name="urgencia" value="${k}"><span>${v}</span></label>`).join("")}</div>
         <label>¿Quién debe enterarse? <span class="ayuda">(puedes tocar varias)</span></label>
