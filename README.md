@@ -26,6 +26,14 @@ Algunas secciones son módulos que el administrador enciende por hotel en **Ajus
 
 - **Checklist**: el líder arma listas por área y por turno (o para todos los turnos) en **Ajustes → Checklists**. El personal del área marca cada punto en su turno; queda guardado quién y cuándo, y cada día y turno queda en el historial. Los días anteriores no se pueden cambiar.
 
+## Sin señal
+
+En Tayrona la señal se cae seguido, así que la página sigue funcionando sin ella:
+
+- **Abrir y ver**: `sw.js` guarda la página y lo último que se cargó. Siempre intenta primero la red; sin señal, o si no responde en unos segundos, muestra lo guardado.
+- **Anotar**: las novedades, los comentarios y las marcas del checklist que no se pueden enviar quedan en el celular como "pendientes de enviar" (franja amarilla arriba) y salen solos, en orden, cuando vuelve la señal. Cada cosa lleva su id desde el celular, así que reintentar nunca la duplica. Lo demás (cambiar estados, asignar tareas, ajustes) necesita señal.
+- **Entrar**: tras 10 minutos sin uso se pide el PIN otra vez, pero la sesión queda guardada para poder entrar sin señal. Sin señal solo entra quien entró por última vez en ese celular, con su PIN (se guarda una huella del PIN, no el PIN; tras 5 intentos fallidos hay que entrar con señal). **Cerrar sesión** borra todo del celular.
+
 ## Base de datos
 
 Las migraciones están en `supabase/migrations/` y se aplican en orden.
