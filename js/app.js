@@ -1023,6 +1023,10 @@ async function vNovedad([id]) {
   }
   const propia = n.hotel_id === S.hotel.id;
   const puedeEditar = !local && propia && (n.autor_id === S.user.id || alMenos("jefe_servicio"));
+  // El operador cambia el estado de lo que le toca: sus áreas, lo dirigido a él y lo de todo el hotel
+  const areasNov = n.para_areas?.length ? n.para_areas : n.para_area_id ? [n.para_area_id] : [];
+  const meToca = n.para_perfil_id === S.user.id || areasNov.some(esMia) || (!areasNov.length && !n.para_perfil_id);
+  const puedeEstado = puedeEditar || (!local && propia && meToca);
   const color = n.tipo?.color ?? "#6b7280";
   const tareasAbiertas = tareas.filter((t) => ["pendiente", "en_curso"].includes(t.estado)).length;
 
@@ -1036,12 +1040,12 @@ async function vNovedad([id]) {
       <div class="meta">${esc(paraTexto(n))}${n.lugar ? " · " + esc(n.lugar) : ""}</div>
       ${n.estado === "anulada" ? `<p class="error-txt">Anulada: ${esc(n.motivo_anulacion)}</p>` : ""}
     </div>
-    ${puedeEditar && n.estado !== "anulada" ? `<div class="acciones">
+    ${puedeEstado && n.estado !== "anulada" ? `<div class="acciones">
       ${n.estado !== "seguimiento" && n.estado !== "cerrada" ? `<button class="btn sec chico" data-estado="seguimiento">En seguimiento</button>` : ""}
       ${n.estado === "cerrada" ? `<button class="btn sec chico" data-estado="abierta">Reabrir</button>`
         : !tareasAbiertas ? `<button class="btn sec chico" data-estado="cerrada">Cerrar</button>` : ""}
-      <a class="btn sec chico" href="#/nueva-tarea?novedad=${n.id}">Convertir en tarea</a>
-      <button class="btn peligro chico" id="anular">Anular</button></div>
+      ${puedeEditar ? `<a class="btn sec chico" href="#/nueva-tarea?novedad=${n.id}">Convertir en tarea</a>
+      <button class="btn peligro chico" id="anular">Anular</button>` : ""}</div>
       ${tareasAbiertas && n.estado !== "cerrada" ? `<p class="ayuda">No se puede cerrar todavía: tiene ${tareasAbiertas} ${tareasAbiertas === 1 ? "tarea abierta" : "tareas abiertas"}. Se cerrará sola cuando se terminen.</p>` : ""}` : ""}
     ${tareas.length ? `<h2>Tareas creadas desde esta novedad</h2>${tareas.map(tarjetaTarea).join("")}` : ""}
     ${local ? `<p class="ayuda">Guardada en este celular. Se enviará sola cuando vuelva la señal; después podrás cambiarle el estado o convertirla en tarea.</p>` : ""}
@@ -1067,7 +1071,7 @@ async function vNovedad([id]) {
     const texto = String(d.get("texto")).trim();
     if (!texto) return;
     const r = await enviarOGuardar({ tipo: "comentario", resumen: texto.slice(0, 120),
-      datos: { id: uuid(), novedad_id: id, texto, seguimiento: puedeEditar && n.estado === "abierta" } });
+      datos: { id: uuid(), novedad_id: id, texto, seguimiento: puedeEstado && n.estado === "abierta" } });
     if (r.pendiente) aviso("Sin señal: el comentario quedó guardado en este celular y se enviará solo.");
     vNovedad([id]);
   });
