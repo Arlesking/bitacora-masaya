@@ -283,3 +283,9 @@ button.aviso-t { cursor: pointer; }
 .aviso-t small { display: block; color: #7a5d00; font-weight: 600; font-size: .85rem; }
 .vacio.chico { padding: 4px 0 12px; text-align: left; font-size: .9rem; }
 .fichas.envolver { flex-wrap: wrap; overflow: visible; }
+
+/* Tener en cuenta: avisos programados (empiezan otro día; solo los ve quien maneja avisos) */
+.programados { margin: 2px 0 10px; }
+.programados summary { cursor: pointer; font-weight: 600; color: var(--suave); padding: 8px 0; min-height: 40px; }
+.aviso-t.programado { background: var(--superficie); border-style: dashed; }
+.aviso-t.programado svg, .aviso-t.programado small { color: #6b6b6b; }

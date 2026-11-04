@@ -690,7 +690,7 @@ function abrirNueva(e) {
 // ===== Tener en cuenta =====
 // Avisos cortos con fecha de fin, para todo el hotel o para ciertas áreas.
 // El gerente avisa a todo el hotel o a cualquier área; el jefe y el líder, solo a sus áreas.
-// "hasta" es un día: el aviso se ve hasta que termina ese día y luego desaparece solo.
+// "desde" y "hasta" son días: el aviso empieza a verse ese "desde" (programado) y desaparece solo al terminar el "hasta".
 const diaLocal = (d = new Date()) => new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const masDias = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return diaLocal(d); };
 const fmtHasta = new Intl.DateTimeFormat("es-CO", { weekday: "short", day: "numeric", month: "short" });
@@ -699,19 +699,30 @@ function hastaTexto(f) {
   if (f === masDias(1)) return "Hasta mañana";
   return "Hasta el " + fmtHasta.format(new Date(f + "T12:00")).replace(/[.,]/g, "");
 }
+const diaTexto = (f) => f === masDias(1) ? "mañana" : "el " + fmtHasta.format(new Date(f + "T12:00")).replace(/[.,]/g, "");
+// Un aviso programado (empieza después de hoy) solo lo ve quien puede cambiarlo
+const empezo = (a) => (a.desde ?? diaLocal()) <= diaLocal();
+function cuandoTexto(a) {
+  if (empezo(a)) return hastaTexto(a.hasta);
+  return a.desde === a.hasta ? "Programado: solo " + diaTexto(a.desde) : `Programado: desde ${diaTexto(a.desde)} hasta ${diaTexto(a.hasta)}`;
+}
 const avisosVigentes = () => q(sb.from("avisos").select("*").eq("hotel_id", S.hotel.id).is("quitado_en", null)
   .gte("hasta", diaLocal()).order("hasta").order("creado_en"));
 
 function tarjetaAviso(a) {
   const puede = puedoAvisar(a.areas);
-  return `<${puede ? `button type="button" data-aviso="${a.id}"` : "div"} class="aviso-t">
+  return `<${puede ? `button type="button" data-aviso="${a.id}"` : "div"} class="aviso-t${empezo(a) ? "" : " programado"}">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3z"/></svg>
-    <span><span class="aviso-txt">${esc(a.texto)}</span><small>${hastaTexto(a.hasta)}${a.areas?.length ? " · Para " + esc(areasTexto(a.areas)) : ""}</small></span></${puede ? "button" : "div"}>`;
+    <span><span class="aviso-txt">${esc(a.texto)}</span><small>${cuandoTexto(a)}${a.areas?.length ? " · Para " + esc(areasTexto(a.areas)) : ""}</small></span></${puede ? "button" : "div"}>`;
 }
 
 function abrirAviso(a, alGuardar) {
   const opciones = [["Hoy", diaLocal()], ["Mañana", masDias(1)], ["Esta semana", masDias((7 - new Date().getDay()) % 7)]];
   const marcada = a ? opciones.find(([, f]) => f === a.hasta)?.[1] ?? "otra" : null;
+  // ¿Desde cuándo? Por defecto hoy. Un aviso que ya se está viendo no cambia su inicio.
+  const yaSeVe = a && empezo(a);
+  let desde = a?.desde && !yaSeVe ? a.desde : diaLocal();
+  const desdeMarcada = desde === diaLocal() ? "hoy" : desde === masDias(1) ? "manana" : "otra";
   // Para quién: el gerente empieza en "Todo el hotel"; el jefe o líder, en todas sus áreas
   const posibles = areasParaAvisar();
   let para = a ? (a.areas ?? []) : todoElHotel() ? [] : posibles.map((x) => x.id);
@@ -726,14 +737,21 @@ function abrirAviso(a, alGuardar) {
       <label for="aviso-texto">¿Qué hay que tener en cuenta?</label>
       <textarea id="aviso-texto" name="texto" maxlength="300" required placeholder="Ej: Piscina pequeña cerrada por arreglo">${esc(a?.texto ?? "")}</textarea>
       ${paraHtml}
+      ${yaSeVe ? "" : `<label>¿Desde cuándo?</label>
+      <div class="fichas envolver" role="group" aria-label="Desde cuándo">
+        <button type="button" class="ficha ${desdeMarcada === "hoy" ? "activa" : ""}" data-desde="${diaLocal()}">Desde hoy</button>
+        <button type="button" class="ficha ${desdeMarcada === "manana" ? "activa" : ""}" data-desde="${masDias(1)}">Desde mañana</button>
+        <button type="button" class="ficha ${desdeMarcada === "otra" ? "activa" : ""}" data-desde="otra">Elegir fecha</button>
+      </div>
+      <input type="date" name="fecha-desde" min="${diaLocal()}" value="${desdeMarcada === "otra" ? desde : ""}" ${desdeMarcada === "otra" ? "" : "hidden"} aria-label="Desde">`}
       <label>¿Hasta cuándo?</label>
       <div class="fichas envolver" role="group" aria-label="Hasta cuándo">
-        ${opciones.map(([t, f]) => `<button type="button" class="ficha ${marcada === f ? "activa" : ""}" data-hasta="${f}">${t}</button>`).join("")}
+        ${opciones.map(([t, f]) => `<button type="button" class="ficha ${marcada === f ? "activa" : ""}" data-hasta="${f}" ${f < desde ? "hidden" : ""}>${t}</button>`).join("")}
         <button type="button" class="ficha ${marcada === "otra" ? "activa" : ""}" data-hasta="otra">Elegir fecha</button>
       </div>
       <input type="date" name="fecha" min="${diaLocal()}" value="${marcada === "otra" ? a.hasta : ""}" ${marcada === "otra" ? "" : "hidden"} aria-label="Fecha">
       <div class="acciones"><button class="btn" type="submit">Guardar aviso</button><button class="btn sec" type="button" data-cerrar>Volver</button></div>
-      ${a ? `<div class="acciones"><button class="btn peligro sec" type="button" id="aviso-quitar">Quitar ya</button></div>` : `<p class="meta">Se quita solo cuando pasa la fecha.</p>`}
+      ${a ? `<div class="acciones"><button class="btn peligro sec" type="button" id="aviso-quitar">${yaSeVe ? "Quitar ya" : "Cancelar este aviso"}</button></div>` : `<p class="meta">Si empieza otro día, solo tú y quienes manejan avisos lo ven antes. Se quita solo cuando pasa la fecha.</p>`}
     </form>`);
   d.classList.add("hoja");
   let hasta = marcada === "otra" ? a.hasta : marcada;
@@ -745,6 +763,27 @@ function abrirAviso(a, alGuardar) {
     if (!fecha.hidden) fecha.focus();
   }));
   fecha.addEventListener("change", () => (hasta = fecha.value || null));
+  // Cambiar el inicio esconde las opciones de "hasta" que quedarían antes y suelta la que ya no sirve
+  const fechaDesde = d.querySelector("[name=fecha-desde]");
+  const ponerDesde = (f) => {
+    desde = f || null;
+    const min = desde || diaLocal();
+    fecha.min = min;
+    d.querySelectorAll("[data-hasta]").forEach((b) => {
+      if (b.dataset.hasta === "otra") return;
+      b.hidden = b.dataset.hasta < min;
+      if (b.hidden && b.classList.contains("activa")) { b.classList.remove("activa"); hasta = null; }
+    });
+    if (hasta && hasta < min) { hasta = null; fecha.value = ""; }
+  };
+  d.querySelectorAll("[data-desde]").forEach((b) => b.addEventListener("click", () => {
+    d.querySelectorAll("[data-desde]").forEach((x) => x.classList.toggle("activa", x === b));
+    fechaDesde.hidden = b.dataset.desde !== "otra";
+    ponerDesde(b.dataset.desde === "otra" ? fechaDesde.value : b.dataset.desde);
+    if (!fechaDesde.hidden) fechaDesde.focus();
+  }));
+  fechaDesde?.addEventListener("change", () => ponerDesde(fechaDesde.value));
+  if (!yaSeVe) ponerDesde(desde);
   // Tocar un área la suma o la quita; "Todo el hotel" quita las áreas, y sin áreas vuelve a "Todo el hotel"
   const fichasPara = [...d.querySelectorAll("[data-para]")];
   const pintarPara = () => fichasPara.forEach((b) => b.classList.toggle("activa", b.dataset.para ? para.includes(b.dataset.para) : !para.length));
@@ -760,20 +799,29 @@ function abrirAviso(a, alGuardar) {
     if (!texto) throw new Error("Escribe el aviso.");
     if (!hasta) throw new Error("Elige hasta cuándo.");
     if (hasta < diaLocal()) throw new Error("La fecha ya pasó.");
+    if (!yaSeVe) {
+      if (!desde) throw new Error("Elige desde cuándo.");
+      if (desde < diaLocal()) throw new Error("La fecha de inicio ya pasó.");
+      if (hasta < desde) throw new Error("La fecha de fin no puede ser antes del inicio.");
+    }
     const areas = para.length ? para : null;
-    if (a) await q(sb.from("avisos").update({ texto, hasta, areas }).eq("id", a.id));
-    else await q(sb.from("avisos").insert({ hotel_id: S.hotel.id, texto, hasta, areas, autor_id: S.user.id }));
-    d.close(); aviso(a ? "Aviso cambiado." : `Aviso guardado. Ya lo ve ${areas ? "la gente de " + areasTexto(areas) : "todo el hotel"}.`); alGuardar();
+    const datos = yaSeVe ? { texto, hasta, areas } : { texto, desde, hasta, areas };
+    if (a) await q(sb.from("avisos").update(datos).eq("id", a.id));
+    else await q(sb.from("avisos").insert({ hotel_id: S.hotel.id, ...datos, autor_id: S.user.id }));
+    const quien = areas ? "la gente de " + areasTexto(areas) : "todo el hotel";
+    const msg = !yaSeVe && desde > diaLocal() ? `Aviso programado. ${quien[0].toUpperCase() + quien.slice(1)} lo verá desde ${diaTexto(desde)}.`
+      : a ? "Aviso cambiado." : `Aviso guardado. Ya lo ve ${quien}.`;
+    d.close(); aviso(msg); alGuardar();
   });
   alClic("#aviso-quitar", async () => {
     await q(sb.from("avisos").update({ quitado_en: new Date().toISOString(), quitado_por: S.user.id }).eq("id", a.id));
-    d.close(); aviso("Aviso quitado."); alGuardar();
+    d.close(); aviso(yaSeVe ? "Aviso quitado." : "Aviso cancelado."); alGuardar();
   }, d);
 }
 
 // ===== Mi turno =====
 async function vInicio() {
-  const [avisos, sinLeer, misT, bandeja, urgentesTodas] = await Promise.all([
+  const [avisosTodos, sinLeer, misT, bandeja, urgentesTodas] = await Promise.all([
     avisosVigentes().catch(() => []),
     novedadesSinLeer(),
     misTareas(),
@@ -784,6 +832,9 @@ async function vInicio() {
     q(visibles(sb.from("novedades").select(SEL_NOV)).in("estado", ["abierta", "seguimiento"]).in("urgencia", URGENTE)
       .order("creado_en", { ascending: false }).limit(20)),
   ]);
+  const avisos = avisosTodos.filter(empezo);
+  const programados = avisosTodos.filter((a) => !empezo(a) && puedoAvisar(a.areas))
+    .sort((x, y) => x.desde.localeCompare(y.desde) || x.hasta.localeCompare(y.hasta));
   const checklist = S.area && usaModulo("checklist") ? await checklistDelTurno(S.area) : null;
   const turno = S.area ? turnoActual(S.area) : null;
   const mias = soloVisibles(misT);
@@ -806,7 +857,8 @@ async function vInicio() {
     </div>` : ""}
     ${avisos.length || areasParaAvisar().length ? `<div class="fila entre"><h2>Tener en cuenta</h2>
       ${areasParaAvisar().length ? `<button class="btn sec chico" id="aviso-nuevo">+ Agregar</button>` : ""}</div>
-      ${avisos.map(tarjetaAviso).join("") || `<p class="vacio chico">Nada por ahora. Agrega lo que el equipo deba recordar por unos días.</p>`}` : ""}
+      ${avisos.map(tarjetaAviso).join("") || `<p class="vacio chico">Nada por ahora. Agrega lo que el equipo deba recordar por unos días.</p>`}
+      ${programados.length ? `<details class="programados"><summary>Programados (${programados.length})</summary>${programados.map(tarjetaAviso).join("")}</details>` : ""}` : ""}
     <div class="contadores">
       <button type="button" class="contador ${sinLeer.length ? "ambar" : ""}" data-ir="sec-leer"><b>${sinLeer.length}</b><span>Por leer</span></button>
       <button type="button" class="contador ${mias.length ? "verde" : ""}" data-ir="sec-tareas"><b>${mias.length}</b><span>Mis tareas</span></button>
@@ -825,7 +877,7 @@ async function vInicio() {
     document.getElementById(b.dataset.ir).scrollIntoView({ behavior: "smooth", block: "start" })));
   alClic("#aviso-nuevo", () => abrirAviso(null, vInicio));
   app.querySelectorAll("[data-aviso]").forEach((b) => b.addEventListener("click", () =>
-    abrirAviso(avisos.find((a) => a.id === b.dataset.aviso), vInicio)));
+    abrirAviso(avisosTodos.find((a) => a.id === b.dataset.aviso), vInicio)));
   alClic("#leer-todo", async () => {
     await q(sb.from("novedad_lecturas").upsert(sinLeer.map((n) => ({ novedad_id: n.id, perfil_id: S.user.id })), { onConflict: "novedad_id,perfil_id", ignoreDuplicates: true }));
     aviso("Listo, todo leído.");
