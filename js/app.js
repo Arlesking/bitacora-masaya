@@ -674,9 +674,9 @@ function abrirMas() {
   d.querySelector("#mas-hotel")?.addEventListener("click", () => { d.close(); S.hotel = null; ir("hotel"); });
 }
 
-// "Nueva": el operador va directo a la novedad; del jefe de servicio hacia arriba elige novedad o tarea.
+// "Nueva": todos eligen novedad o tarea.
 function abrirNueva(e) {
-  if (!S.hotel || !alMenos("jefe_servicio")) return;
+  if (!S.hotel) return;
   e.preventDefault();
   const it = (ruta, icono, texto, ayuda) => `<a class="hoja-it" href="#/${ruta}" data-cerrar><svg viewBox="0 0 24 24" aria-hidden="true">${icono}</svg><span>${texto}<br><small class="meta">${ayuda}</small></span></a>`;
   const d = dialogo(`<div class="hoja-asa" data-cerrar></div><nav aria-label="Nueva">
@@ -1105,11 +1105,10 @@ async function vNuevaTarea(_, params) {
   const novId = params.get("novedad");
   const nov = novId ? await q(sb.from("novedades").select("id, descripcion, lugar, urgencia, para_area_id, para_areas, tipo:tipos_novedad(nombre)").eq("id", novId).maybeSingle()) : null;
   // Gerente y administrador: cualquier área y persona del hotel. Jefe y líder: sus áreas y su gente.
-  // Operador: su área o él mismo. La base de datos aplica lo mismo.
-  const jefe = alMenos("jefe_servicio");
+  // Operador: igual que el jefe, sus áreas y la gente de sus áreas. La base de datos aplica lo mismo.
   const areas = S.areas.filter((a) => a.activa && (todoElHotel() || esMia(a.id)));
   const deMisAreas = (p) => esMia(p.area_id) || p.areas.some(esMia);
-  const personas = S.personas.filter((p) => p.activa && (p.id === S.user.id || (jefe && (todoElHotel() || deMisAreas(p)))));
+  const personas = S.personas.filter((p) => p.activa && (p.id === S.user.id || todoElHotel() || deMisAreas(p)));
   const areaInicial = nov?.para_areas?.[0] ?? nov?.para_area_id ?? S.area ?? areas[0]?.id;
 
   app.innerHTML = `<h1>Nueva tarea</h1>
@@ -1122,7 +1121,7 @@ async function vNuevaTarea(_, params) {
       <label>Asignar a</label>
       <div class="opciones">
         ${areas.length ? `<label><input type="radio" name="a" value="area" checked><span>Un área</span></label>` : ""}
-        <label><input type="radio" name="a" value="persona" ${areas.length ? "" : "checked"}><span>${jefe ? "Una persona" : "Mí"}</span></label>
+        <label><input type="radio" name="a" value="persona" ${areas.length ? "" : "checked"}><span>${personas.length > 1 ? "Una persona" : "Mí"}</span></label>
         ${areas.length ? `<label><input type="radio" name="a" value="siguiente"><span>Siguiente turno</span></label>` : ""}
       </div>
       <div id="sel-area" ${areas.length ? "" : "hidden"}><label for="area">Área</label>
