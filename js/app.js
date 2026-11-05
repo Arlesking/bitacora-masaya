@@ -1,4 +1,5 @@
 import { sb } from "./sb.js";
+import { FOTOS_ACTIVAS } from "./config.js";
 import { medirPantalla, medirContexto } from "./medicion.js";
 
 // ===== Utilidades =====
@@ -354,6 +355,13 @@ async function comprimir(archivo) {
 // Botón "Agregar foto" con miniaturas. Devuelve { fotos } para leer lo elegido al guardar.
 function selectorFotos(caja, { max = MAX_FOTOS, chico = false } = {}) {
   const sel = { fotos: [] };
+  // Fotos apagadas en config.js: se esconden el botón, su título y su nota
+  if (!FOTOS_ACTIVAS) {
+    caja.hidden = true;
+    if (caja.previousElementSibling?.matches("label")) caja.previousElementSibling.hidden = true;
+    if (caja.nextElementSibling?.matches(".nota-foto")) caja.nextElementSibling.hidden = true;
+    return sel;
+  }
   const pintar = () => {
     caja.innerHTML = `${sel.fotos.length ? `<div class="fotos ${chico ? "mini" : ""}">${sel.fotos.map((f, i) =>
       `<span class="foto"><img src="${f.url}" alt="Foto ${i + 1}"><button type="button" class="quitar" data-quitar="${i}" aria-label="Quitar foto">×</button></span>`).join("")}</div>` : ""}
@@ -1154,7 +1162,7 @@ async function vNuevaNovedad() {
         <p class="nota-datos">Del huésped anota solo lo necesario. Cédula o teléfono, únicamente si hacen falta para resolver.</p>
         <label>Fotos <span class="ayuda">(opcional, hasta ${MAX_FOTOS})</span></label>
         <div id="fotos-nov"></div>
-        <p class="nota-datos">No fotografíes documentos ni la cara del huésped.</p>
+        <p class="nota-datos nota-foto">No fotografíes documentos ni la cara del huésped.</p>
         <label>Urgencia</label>
         <div class="opciones" role="radiogroup">${Object.entries(URG).map(([k, v]) => `<label><input type="radio" name="urgencia" value="${k}"><span>${v}</span></label>`).join("")}</div>
         <label>¿Quién debe enterarse? <span class="ayuda">(puedes tocar varias)</span></label>
