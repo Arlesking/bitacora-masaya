@@ -161,7 +161,6 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
 .filtros .todo { grid-column: 1 / -1; }
 @media (min-width: 640px) { .filtros { grid-template-columns: repeat(4, minmax(0,1fr)); } }
 
-.comentario { border-left: 3px solid var(--borde); padding: 4px 0 4px 12px; margin: 10px 0; }
 
 .tabla-scroll { overflow-x: auto; background: var(--superficie); border: 1px solid var(--borde); border-radius: var(--radio); }
 table { width: 100%; border-collapse: collapse; font-size: .88rem; }
@@ -317,3 +316,19 @@ dialog.dlg-foto { padding: 8px; max-width: 96vw; max-height: 96vh; background: #
 .medidor i { display: block; height: 100%; background: var(--marca); }
 .medidor.lleno i { background: var(--alta); }
 .franja-fotos { display: block; background: #fdf1e1; color: #7a4504; border-color: #f3c98b; text-decoration: none; font-weight: 600; }
+
+/* Historial de cada novedad y tarea: barra de estado y línea de tiempo */
+.estados { display: flex; gap: 4px; margin: 12px 0 4px; }
+.estados div { flex: 1; text-align: center; font-size: .78rem; font-weight: 600; color: var(--suave); }
+.estados i { display: block; height: 6px; border-radius: 9px; background: var(--borde); margin-bottom: 4px; }
+.estados .on { color: var(--marca); }
+.estados .on i { background: var(--marca); }
+.linea { position: relative; padding-left: 22px; margin: 6px 0 4px; }
+.linea::before { content: ""; position: absolute; left: 7px; top: 8px; bottom: 8px; width: 2px; background: var(--borde); }
+.ev { position: relative; padding: 4px 0 12px; }
+.ev::before { content: ""; position: absolute; left: -20px; top: 8px; width: 12px; height: 12px; border-radius: 50%; background: var(--superficie); border: 2px solid var(--suave); }
+.ev.est::before { background: var(--marca); border-color: var(--marca); }
+.ev.ok::before { background: var(--ok); border-color: var(--ok); }
+.ev .q { font-weight: 600; overflow-wrap: anywhere; }
+.ev .com { background: var(--superficie); border: 1px solid var(--borde); border-radius: 10px; padding: 6px 10px; margin-top: 6px; }
+.ev .com .desc { margin: 0; }
