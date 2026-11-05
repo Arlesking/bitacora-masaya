@@ -1,4 +1,5 @@
 import { sb } from "./sb.js";
+import { FOTOS_ACTIVAS } from "./config.js";
 import { medirPantalla, medirContexto } from "./medicion.js";
 
 // ===== Utilidades =====
@@ -182,6 +183,8 @@ async function ejecutar(op) {
     const reg = await paso((d.turno_id ? c.eq("turno_id", d.turno_id) : c.is("turno_id", null)).single());
     return paso(sb.from("checklist_marcas").upsert({ registro_id: reg.id, item_id: d.item_id, hecho: d.hecho, marcado_en: hora },
       { onConflict: "registro_id,item_id" }).select("*").single());
+  } else if (op.tipo === "foto") {
+    await subirFoto(d, hora, paso);
   }
 }
 
@@ -239,7 +242,7 @@ function repintarSiSePuede() {
   if (["inicio", "novedades", "novedad", "tarea", "checklist"].includes(vista) && !escribiendo && !document.querySelector("dialog")) enrutar();
 }
 
-const QUE = { novedad: "Novedad", comentario: "Comentario", marca: "Checklist" };
+const QUE = { novedad: "Novedad", comentario: "Comentario", marca: "Checklist", foto: "Foto" };
 function pintarSenal() {
   const el = document.getElementById("senal");
   const n = porEnviar().length, fallas = S.user ? cola().filter((op) => op.fallo).length : 0;
@@ -291,7 +294,172 @@ const novedadesPendientes = () => cola().filter((op) => op.tipo === "novedad" &&
 }));
 const comentariosPendientes = (campo, id) => cola().filter((op) => op.tipo === "comentario" && op.datos[campo] === id)
   .map((op) => ({ ...op.datos, creado_en: op.en, autor: { nombre: S.perfil.nombre }, pendiente: true }));
-const comentarioHtml = (c) => `<div class="comentario"><div class="meta">${esc(c.autor?.nombre ?? "")} · ${c.pendiente ? `<span class="chip pend-chip">Pendiente de enviar</span>` : fecha(c.creado_en)}</div><div class="desc">${esc(c.texto)}</div></div>`;
+const comentarioHtml = (c) => `<div class="comentario"><div class="meta">${esc(c.autor?.nombre ?? "")} · ${c.pendiente ? `<span class="chip pend-chip">Pendiente de enviar</span>` : fecha(c.creado_en)}</div>${c.texto ? `<div class="desc">${esc(c.texto)}</div>` : ""}${fotosHtml(c.fotos ?? [], true)}</div>`;
+
+// ===== Fotos =====
+// Se achican en el celular (lado largo 1600 px, JPEG, unos 150 KB) y así pierden la ubicación GPS.
+// Cada foto se guarda primero en este celular (IndexedDB) y sale como "pendiente": con señal sube
+// en el momento; sin señal, detrás de la novedad o el comentario al que pertenece.
+const MAX_FOTOS = 3, FOTO_LADO = 1600, FOTO_META = 220000;
+const LIMITE_FOTOS = 1024 ** 3;   // 1 GB gratis de Supabase Storage
+let bdFotos = null;
+function bdLocal() {
+  bdFotos ??= new Promise((ok, mal) => {
+    const r = indexedDB.open("bitacora-fotos", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("fotos");
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => mal(r.error);
+  });
+  return bdFotos;
+}
+async function fotoLocal(modo, id, blob) {
+  try {
+    const bd = await bdLocal();
+    return await new Promise((ok, mal) => {
+      const t = bd.transaction("fotos", modo === "leer" ? "readonly" : "readwrite").objectStore("fotos");
+      const r = modo === "leer" ? t.get(id) : modo === "guardar" ? t.put(blob, id) : t.delete(id);
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => mal(r.error);
+    });
+  } catch (err) {
+    if (modo === "guardar") throw new Error("Este celular no deja guardar la foto. Revisa el espacio libre.");
+    return null;
+  }
+}
+
+async function comprimir(archivo) {
+  let img;
+  try { img = await createImageBitmap(archivo, { imageOrientation: "from-image" }); } catch {
+    img = await new Promise((ok, mal) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = () => mal(new Error("No se pudo abrir esa foto. Prueba con otra."));
+      i.src = URL.createObjectURL(archivo);
+    });
+  }
+  const escala = Math.min(1, FOTO_LADO / Math.max(img.width, img.height));
+  const lienzo = document.createElement("canvas");
+  lienzo.width = Math.round(img.width * escala);
+  lienzo.height = Math.round(img.height * escala);
+  lienzo.getContext("2d").drawImage(img, 0, 0, lienzo.width, lienzo.height);
+  img.close?.();
+  let blob;
+  for (const calidad of [0.72, 0.6, 0.5, 0.4]) {
+    blob = await new Promise((ok) => lienzo.toBlob(ok, "image/jpeg", calidad));
+    if (blob && blob.size <= FOTO_META) break;
+  }
+  if (!blob) throw new Error("No se pudo preparar la foto.");
+  return blob;
+}
+
+// Botón "Agregar foto" con miniaturas. Devuelve { fotos } para leer lo elegido al guardar.
+function selectorFotos(caja, { max = MAX_FOTOS, chico = false } = {}) {
+  const sel = { fotos: [] };
+  // Fotos apagadas en config.js: se esconden el botón, su título y su nota
+  if (!FOTOS_ACTIVAS) {
+    caja.hidden = true;
+    if (caja.previousElementSibling?.matches("label")) caja.previousElementSibling.hidden = true;
+    if (caja.nextElementSibling?.matches(".nota-foto")) caja.nextElementSibling.hidden = true;
+    return sel;
+  }
+  const pintar = () => {
+    caja.innerHTML = `${sel.fotos.length ? `<div class="fotos ${chico ? "mini" : ""}">${sel.fotos.map((f, i) =>
+      `<span class="foto"><img src="${f.url}" alt="Foto ${i + 1}"><button type="button" class="quitar" data-quitar="${i}" aria-label="Quitar foto">×</button></span>`).join("")}</div>` : ""}
+      ${sel.fotos.length < max ? `<label class="agregar-foto ${chico ? "chico" : ""}">
+        <input type="file" accept="image/*" ${max - sel.fotos.length > 1 ? "multiple" : ""} hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+        ${chico ? "Foto" : "Agregar foto"}${sel.fotos.length && !chico ? ` <span class="cuenta">${sel.fotos.length} de ${max}</span>` : ""}</label>` : ""}`;
+    caja.querySelector("input[type=file]")?.addEventListener("change", async (e) => {
+      const archivos = [...e.target.files].slice(0, max - sel.fotos.length);
+      const etiqueta = caja.querySelector(".agregar-foto");
+      if (etiqueta) etiqueta.classList.add("cargando-foto");
+      try {
+        for (const a of archivos) {
+          const blob = await comprimir(a);
+          sel.fotos.push({ blob, url: URL.createObjectURL(blob) });
+        }
+      } catch (err) { aviso(err.message, true); }
+      pintar();
+    });
+    caja.querySelectorAll("[data-quitar]").forEach((b) => b.addEventListener("click", () => {
+      URL.revokeObjectURL(sel.fotos[b.dataset.quitar].url);
+      sel.fotos.splice(Number(b.dataset.quitar), 1);
+      pintar();
+    }));
+  };
+  pintar();
+  return sel;
+}
+
+// Guarda las fotos elegidas para una novedad, tarea, comentario o cierre. destino: { hotel_id, novedad_id | tarea_id, comentario_id?, de_cierre? }
+async function guardarFotos(sel, destino) {
+  let pendiente = false;
+  for (const f of sel?.fotos ?? []) {
+    const id = uuid();
+    await fotoLocal("guardar", id, f.blob);
+    const { hotel_id, ...resto } = destino;
+    const r = await enviarOGuardar({ tipo: "foto", resumen: "Foto",
+      datos: { id, ...resto, ruta: `${hotel_id}/${id}.jpg`, bytes: f.blob.size } });
+    pendiente ||= !!r.pendiente;
+  }
+  return pendiente;
+}
+
+async function subirFoto(d, hora, paso) {
+  const blob = await fotoLocal("leer", d.id);
+  if (!blob) throw Object.assign(new Error("La foto ya no está en este celular."), { reintentar: false });
+  const { error } = await sb.storage.from("fotos").upload(d.ruta, blob, { contentType: "image/jpeg", upsert: false });
+  // Si ya había subido (se cortó la señal antes de terminar), se sigue
+  if (error && !/exist|duplicate/i.test(error.message)) {
+    const status = Number(error.status ?? error.statusCode) || 0;
+    throw Object.assign(new Error(error.message), { reintentar: esDeRed(error, status) });
+  }
+  await paso(sb.from("fotos").insert({ id: d.id, novedad_id: d.novedad_id ?? null, tarea_id: d.tarea_id ?? null,
+    comentario_id: d.comentario_id ?? null, de_cierre: !!d.de_cierre, ruta: d.ruta, bytes: d.bytes, creado_en: hora }), true);
+  fotoLocal("borrar", d.id);
+}
+
+// Fotos que todavía esperan en este celular, para mostrarlas con "por subir"
+const fotosPendientes = (campo, id) => cola().filter((op) => op.tipo === "foto" && op.datos[campo] === id)
+  .map((op) => ({ ...op.datos, pendiente: true }));
+
+// Miniaturas: el archivo se pide cuando ya están en pantalla (enlaces firmados de 1 hora)
+const fotosHtml = (fotos, chico = false) => fotos.length ? `<div class="fotos ${chico ? "mini" : ""}">${fotos.map((f) => f.borrada_en
+  ? `<span class="foto borrada" title="Se borró para liberar espacio">Foto borrada</span>`
+  : `<button type="button" class="foto" data-foto="${esc(f.id)}" data-ruta="${esc(f.ruta)}" ${f.pendiente ? "data-local" : ""} aria-label="Ver foto">
+      ${f.pendiente ? `<span class="por-subir">por subir</span>` : ""}</button>`).join("")}</div>` : "";
+
+async function cargarFotos(raiz = app) {
+  const botones = [...raiz.querySelectorAll("[data-foto]")];
+  if (!botones.length) return;
+  const urls = {};
+  for (const b of botones.filter((x) => x.hasAttribute("data-local"))) {
+    const blob = await fotoLocal("leer", b.dataset.foto);
+    if (blob) urls[b.dataset.ruta] = URL.createObjectURL(blob);
+  }
+  const remotas = botones.filter((x) => !x.hasAttribute("data-local")).map((x) => x.dataset.ruta);
+  if (remotas.length) {
+    const { data } = await sb.storage.from("fotos").createSignedUrls(remotas, 3600).catch(() => ({ data: null }));
+    for (const r of data ?? []) if (r.signedUrl) urls[r.path] = r.signedUrl;
+  }
+  for (const b of botones) {
+    const url = urls[b.dataset.ruta];
+    if (!url) { b.classList.add("sin-cargar"); b.title = "Sin señal: la foto se verá cuando vuelva"; continue; }
+    const img = document.createElement("img");
+    img.src = url; img.alt = "Foto"; img.loading = "lazy";
+    b.prepend(img);
+    b.addEventListener("click", () => {
+      const d = dialogo(`<div class="ver-foto"><img src="${url}" alt="Foto"><button class="btn sec ancho" data-cerrar>Cerrar</button></div>`);
+      d.classList.add("dlg-foto");
+      d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
+    });
+  }
+}
+
+const iconoFotos = (n) => {
+  const c = n?.fotos?.[0]?.count ?? 0;
+  return c ? `<span class="con-fotos" aria-label="${c} ${c === 1 ? "foto" : "fotos"}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>${c}</span>` : "";
+};
 
 window.addEventListener("senal", (e) => {
   const antes = S.sinSenal;
@@ -559,8 +727,8 @@ async function entrarSinSenal(correo, pin) {
 }
 
 // ===== Tarjetas =====
-const SEL_NOV = "*, tipo:tipos_novedad(nombre, color), autor:perfiles!novedades_autor_id_fkey(nombre), para_perfil:perfiles!novedades_para_perfil_id_fkey(nombre)";
-const SEL_TAR = "*, asignado:perfiles!tareas_asignada_a_fkey(nombre), creador:perfiles!tareas_creado_por_fkey(nombre)";
+const SEL_NOV = "*, tipo:tipos_novedad(nombre, color), autor:perfiles!novedades_autor_id_fkey(nombre), para_perfil:perfiles!novedades_para_perfil_id_fkey(nombre), fotos(count)";
+const SEL_TAR = "*, asignado:perfiles!tareas_asignada_a_fkey(nombre), creador:perfiles!tareas_creado_por_fkey(nombre), fotos(count)";
 const URGENTE = ["alta", "critica"];
 
 // Ícono de cada tipo de novedad, adivinado por palabras de su nombre (los tipos los edita el líder)
@@ -604,7 +772,7 @@ function tarjetaNovedad(n, noLeida = false) {
         ${n.pendiente ? `<span class="chip pend-chip">Pendiente de enviar</span>` : n.estado !== "abierta" ? `<span class="chip estado">${EST_N[n.estado]}</span>` : ""}
         ${n.hotel_id !== S.hotel.id ? `<span class="chip grupo">${esc(hotelDe(n.hotel_id))}</span>` : n.compartida_grupo ? `<span class="chip grupo">Compartida</span>` : ""}</span></div>
       <p class="desc">${esc(n.descripcion.length > 160 ? n.descripcion.slice(0, 160) + "…" : n.descripcion)}</p>
-      <div class="meta">${n.lugar ? esc(tipo) + " · " : ""}${esc(n.autor?.nombre ?? "Alguien")} · ${fecha(n.creado_en)} · ${esc(paraTexto(n))}</div>
+      <div class="meta">${iconoFotos(n)}${n.lugar ? esc(tipo) + " · " : ""}${esc(n.autor?.nombre ?? "Alguien")} · ${fecha(n.creado_en)} · ${esc(paraTexto(n))}</div>
     </div>
   </a>`;
 }
@@ -625,7 +793,7 @@ function tarjetaTarea(t) {
       <span class="fila">${urgente ? `<span class="urg">${URG[t.urgencia]}</span>` : ""}${t.estado !== "pendiente" ? `<span class="chip estado">${EST_T[t.estado]}</span>` : ""}</span></div>
     <div class="fila" style="margin-top:4px">${vencida(t) ? `<span class="chip vencida">Vencida</span>` : ""}
       ${t.hotel_id !== S.hotel.id ? `<span class="chip grupo">${esc(hotelDe(t.hotel_id))}</span>` : ""}
-      <span class="meta">${esc(asignadoTexto(t))}${t.fecha_limite ? " · vence " + fecha(t.fecha_limite) : ""}</span></div>
+      <span class="meta">${iconoFotos(t)}${esc(asignadoTexto(t))}${t.fecha_limite ? " · vence " + fecha(t.fecha_limite) : ""}</span></div>
   </a>`;
 }
 
@@ -690,7 +858,7 @@ function abrirNueva(e) {
 // ===== Tener en cuenta =====
 // Avisos cortos con fecha de fin, para todo el hotel o para ciertas áreas.
 // El gerente avisa a todo el hotel o a cualquier área; el jefe y el líder, solo a sus áreas.
-// "hasta" es un día: el aviso se ve hasta que termina ese día y luego desaparece solo.
+// "desde" y "hasta" son días: el aviso empieza a verse ese "desde" (programado) y desaparece solo al terminar el "hasta".
 const diaLocal = (d = new Date()) => new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const masDias = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return diaLocal(d); };
 const fmtHasta = new Intl.DateTimeFormat("es-CO", { weekday: "short", day: "numeric", month: "short" });
@@ -699,19 +867,30 @@ function hastaTexto(f) {
   if (f === masDias(1)) return "Hasta mañana";
   return "Hasta el " + fmtHasta.format(new Date(f + "T12:00")).replace(/[.,]/g, "");
 }
+const diaTexto = (f) => f === masDias(1) ? "mañana" : "el " + fmtHasta.format(new Date(f + "T12:00")).replace(/[.,]/g, "");
+// Un aviso programado (empieza después de hoy) solo lo ve quien puede cambiarlo
+const empezo = (a) => (a.desde ?? diaLocal()) <= diaLocal();
+function cuandoTexto(a) {
+  if (empezo(a)) return hastaTexto(a.hasta);
+  return a.desde === a.hasta ? "Programado: solo " + diaTexto(a.desde) : `Programado: desde ${diaTexto(a.desde)} hasta ${diaTexto(a.hasta)}`;
+}
 const avisosVigentes = () => q(sb.from("avisos").select("*").eq("hotel_id", S.hotel.id).is("quitado_en", null)
   .gte("hasta", diaLocal()).order("hasta").order("creado_en"));
 
 function tarjetaAviso(a) {
   const puede = puedoAvisar(a.areas);
-  return `<${puede ? `button type="button" data-aviso="${a.id}"` : "div"} class="aviso-t">
+  return `<${puede ? `button type="button" data-aviso="${a.id}"` : "div"} class="aviso-t${empezo(a) ? "" : " programado"}">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3z"/></svg>
-    <span><span class="aviso-txt">${esc(a.texto)}</span><small>${hastaTexto(a.hasta)}${a.areas?.length ? " · Para " + esc(areasTexto(a.areas)) : ""}</small></span></${puede ? "button" : "div"}>`;
+    <span><span class="aviso-txt">${esc(a.texto)}</span><small>${cuandoTexto(a)}${a.areas?.length ? " · Para " + esc(areasTexto(a.areas)) : ""}</small></span></${puede ? "button" : "div"}>`;
 }
 
 function abrirAviso(a, alGuardar) {
   const opciones = [["Hoy", diaLocal()], ["Mañana", masDias(1)], ["Esta semana", masDias((7 - new Date().getDay()) % 7)]];
   const marcada = a ? opciones.find(([, f]) => f === a.hasta)?.[1] ?? "otra" : null;
+  // ¿Desde cuándo? Por defecto hoy. Un aviso que ya se está viendo no cambia su inicio.
+  const yaSeVe = a && empezo(a);
+  let desde = a?.desde && !yaSeVe ? a.desde : diaLocal();
+  const desdeMarcada = desde === diaLocal() ? "hoy" : desde === masDias(1) ? "manana" : "otra";
   // Para quién: el gerente empieza en "Todo el hotel"; el jefe o líder, en todas sus áreas
   const posibles = areasParaAvisar();
   let para = a ? (a.areas ?? []) : todoElHotel() ? [] : posibles.map((x) => x.id);
@@ -726,14 +905,21 @@ function abrirAviso(a, alGuardar) {
       <label for="aviso-texto">¿Qué hay que tener en cuenta?</label>
       <textarea id="aviso-texto" name="texto" maxlength="300" required placeholder="Ej: Piscina pequeña cerrada por arreglo">${esc(a?.texto ?? "")}</textarea>
       ${paraHtml}
+      ${yaSeVe ? "" : `<label>¿Desde cuándo?</label>
+      <div class="fichas envolver" role="group" aria-label="Desde cuándo">
+        <button type="button" class="ficha ${desdeMarcada === "hoy" ? "activa" : ""}" data-desde="${diaLocal()}">Desde hoy</button>
+        <button type="button" class="ficha ${desdeMarcada === "manana" ? "activa" : ""}" data-desde="${masDias(1)}">Desde mañana</button>
+        <button type="button" class="ficha ${desdeMarcada === "otra" ? "activa" : ""}" data-desde="otra">Elegir fecha</button>
+      </div>
+      <input type="date" name="fecha-desde" min="${diaLocal()}" value="${desdeMarcada === "otra" ? desde : ""}" ${desdeMarcada === "otra" ? "" : "hidden"} aria-label="Desde">`}
       <label>¿Hasta cuándo?</label>
       <div class="fichas envolver" role="group" aria-label="Hasta cuándo">
-        ${opciones.map(([t, f]) => `<button type="button" class="ficha ${marcada === f ? "activa" : ""}" data-hasta="${f}">${t}</button>`).join("")}
+        ${opciones.map(([t, f]) => `<button type="button" class="ficha ${marcada === f ? "activa" : ""}" data-hasta="${f}" ${f < desde ? "hidden" : ""}>${t}</button>`).join("")}
         <button type="button" class="ficha ${marcada === "otra" ? "activa" : ""}" data-hasta="otra">Elegir fecha</button>
       </div>
       <input type="date" name="fecha" min="${diaLocal()}" value="${marcada === "otra" ? a.hasta : ""}" ${marcada === "otra" ? "" : "hidden"} aria-label="Fecha">
       <div class="acciones"><button class="btn" type="submit">Guardar aviso</button><button class="btn sec" type="button" data-cerrar>Volver</button></div>
-      ${a ? `<div class="acciones"><button class="btn peligro sec" type="button" id="aviso-quitar">Quitar ya</button></div>` : `<p class="meta">Se quita solo cuando pasa la fecha.</p>`}
+      ${a ? `<div class="acciones"><button class="btn peligro sec" type="button" id="aviso-quitar">${yaSeVe ? "Quitar ya" : "Cancelar este aviso"}</button></div>` : `<p class="meta">Si empieza otro día, solo tú y quienes manejan avisos lo ven antes. Se quita solo cuando pasa la fecha.</p>`}
     </form>`);
   d.classList.add("hoja");
   let hasta = marcada === "otra" ? a.hasta : marcada;
@@ -745,6 +931,27 @@ function abrirAviso(a, alGuardar) {
     if (!fecha.hidden) fecha.focus();
   }));
   fecha.addEventListener("change", () => (hasta = fecha.value || null));
+  // Cambiar el inicio esconde las opciones de "hasta" que quedarían antes y suelta la que ya no sirve
+  const fechaDesde = d.querySelector("[name=fecha-desde]");
+  const ponerDesde = (f) => {
+    desde = f || null;
+    const min = desde || diaLocal();
+    fecha.min = min;
+    d.querySelectorAll("[data-hasta]").forEach((b) => {
+      if (b.dataset.hasta === "otra") return;
+      b.hidden = b.dataset.hasta < min;
+      if (b.hidden && b.classList.contains("activa")) { b.classList.remove("activa"); hasta = null; }
+    });
+    if (hasta && hasta < min) { hasta = null; fecha.value = ""; }
+  };
+  d.querySelectorAll("[data-desde]").forEach((b) => b.addEventListener("click", () => {
+    d.querySelectorAll("[data-desde]").forEach((x) => x.classList.toggle("activa", x === b));
+    fechaDesde.hidden = b.dataset.desde !== "otra";
+    ponerDesde(b.dataset.desde === "otra" ? fechaDesde.value : b.dataset.desde);
+    if (!fechaDesde.hidden) fechaDesde.focus();
+  }));
+  fechaDesde?.addEventListener("change", () => ponerDesde(fechaDesde.value));
+  if (!yaSeVe) ponerDesde(desde);
   // Tocar un área la suma o la quita; "Todo el hotel" quita las áreas, y sin áreas vuelve a "Todo el hotel"
   const fichasPara = [...d.querySelectorAll("[data-para]")];
   const pintarPara = () => fichasPara.forEach((b) => b.classList.toggle("activa", b.dataset.para ? para.includes(b.dataset.para) : !para.length));
@@ -760,20 +967,29 @@ function abrirAviso(a, alGuardar) {
     if (!texto) throw new Error("Escribe el aviso.");
     if (!hasta) throw new Error("Elige hasta cuándo.");
     if (hasta < diaLocal()) throw new Error("La fecha ya pasó.");
+    if (!yaSeVe) {
+      if (!desde) throw new Error("Elige desde cuándo.");
+      if (desde < diaLocal()) throw new Error("La fecha de inicio ya pasó.");
+      if (hasta < desde) throw new Error("La fecha de fin no puede ser antes del inicio.");
+    }
     const areas = para.length ? para : null;
-    if (a) await q(sb.from("avisos").update({ texto, hasta, areas }).eq("id", a.id));
-    else await q(sb.from("avisos").insert({ hotel_id: S.hotel.id, texto, hasta, areas, autor_id: S.user.id }));
-    d.close(); aviso(a ? "Aviso cambiado." : `Aviso guardado. Ya lo ve ${areas ? "la gente de " + areasTexto(areas) : "todo el hotel"}.`); alGuardar();
+    const datos = yaSeVe ? { texto, hasta, areas } : { texto, desde, hasta, areas };
+    if (a) await q(sb.from("avisos").update(datos).eq("id", a.id));
+    else await q(sb.from("avisos").insert({ hotel_id: S.hotel.id, ...datos, autor_id: S.user.id }));
+    const quien = areas ? "la gente de " + areasTexto(areas) : "todo el hotel";
+    const msg = !yaSeVe && desde > diaLocal() ? `Aviso programado. ${quien[0].toUpperCase() + quien.slice(1)} lo verá desde ${diaTexto(desde)}.`
+      : a ? "Aviso cambiado." : `Aviso guardado. Ya lo ve ${quien}.`;
+    d.close(); aviso(msg); alGuardar();
   });
   alClic("#aviso-quitar", async () => {
     await q(sb.from("avisos").update({ quitado_en: new Date().toISOString(), quitado_por: S.user.id }).eq("id", a.id));
-    d.close(); aviso("Aviso quitado."); alGuardar();
+    d.close(); aviso(yaSeVe ? "Aviso quitado." : "Aviso cancelado."); alGuardar();
   }, d);
 }
 
 // ===== Mi turno =====
 async function vInicio() {
-  const [avisos, sinLeer, misT, bandeja, urgentesTodas] = await Promise.all([
+  const [avisosTodos, sinLeer, misT, bandeja, urgentesTodas] = await Promise.all([
     avisosVigentes().catch(() => []),
     novedadesSinLeer(),
     misTareas(),
@@ -784,6 +1000,9 @@ async function vInicio() {
     q(visibles(sb.from("novedades").select(SEL_NOV)).in("estado", ["abierta", "seguimiento"]).in("urgencia", URGENTE)
       .order("creado_en", { ascending: false }).limit(20)),
   ]);
+  const avisos = avisosTodos.filter(empezo);
+  const programados = avisosTodos.filter((a) => !empezo(a) && puedoAvisar(a.areas))
+    .sort((x, y) => x.desde.localeCompare(y.desde) || x.hasta.localeCompare(y.hasta));
   const checklist = S.area && usaModulo("checklist") ? await checklistDelTurno(S.area) : null;
   const turno = S.area ? turnoActual(S.area) : null;
   const mias = soloVisibles(misT);
@@ -798,7 +1017,10 @@ async function vInicio() {
   const hechos = checklist?.listas.reduce((n, p) => n + hechosDe(p), 0) ?? 0;
   const hora = (h) => h.slice(0, 5);
   const pendientes = novedadesPendientes();
+  if (S.perfil.es_admin_global && !S.espacioFotos) S.espacioFotos = await q(sb.rpc("espacio_fotos")).catch(() => null);
+  const pctFotos = S.espacioFotos ? Math.round(S.espacioFotos.bytes / LIMITE_FOTOS * 100) : 0;
   app.innerHTML = `<h1>Hola, ${esc(S.perfil.nombre.split(" ")[0])}</h1>
+    ${S.perfil.es_admin_global && pctFotos >= 80 ? `<a class="tarjeta franja-fotos" href="#/admin?ver=fotos">El espacio para fotos va en ${pctFotos} %. Toca para revisarlo.</a>` : ""}
     ${pendientes.length ? `<h2>Por enviar (${pendientes.length})</h2>${pendientes.map((n) => tarjetaNovedad(n)).join("")}` : ""}
     ${turno || total ? `<div class="turno-banda">
       <span>${turno ? `Turno <strong>${esc(turno.nombre)}</strong> · ${hora(turno.hora_inicio)} a ${hora(turno.hora_fin)}` : "Checklist del turno"}</span>
@@ -806,7 +1028,8 @@ async function vInicio() {
     </div>` : ""}
     ${avisos.length || areasParaAvisar().length ? `<div class="fila entre"><h2>Tener en cuenta</h2>
       ${areasParaAvisar().length ? `<button class="btn sec chico" id="aviso-nuevo">+ Agregar</button>` : ""}</div>
-      ${avisos.map(tarjetaAviso).join("") || `<p class="vacio chico">Nada por ahora. Agrega lo que el equipo deba recordar por unos días.</p>`}` : ""}
+      ${avisos.map(tarjetaAviso).join("") || `<p class="vacio chico">Nada por ahora. Agrega lo que el equipo deba recordar por unos días.</p>`}
+      ${programados.length ? `<details class="programados"><summary>Programados (${programados.length})</summary>${programados.map(tarjetaAviso).join("")}</details>` : ""}` : ""}
     <div class="contadores">
       <button type="button" class="contador ${sinLeer.length ? "ambar" : ""}" data-ir="sec-leer"><b>${sinLeer.length}</b><span>Por leer</span></button>
       <button type="button" class="contador ${mias.length ? "verde" : ""}" data-ir="sec-tareas"><b>${mias.length}</b><span>Mis tareas</span></button>
@@ -825,7 +1048,7 @@ async function vInicio() {
     document.getElementById(b.dataset.ir).scrollIntoView({ behavior: "smooth", block: "start" })));
   alClic("#aviso-nuevo", () => abrirAviso(null, vInicio));
   app.querySelectorAll("[data-aviso]").forEach((b) => b.addEventListener("click", () =>
-    abrirAviso(avisos.find((a) => a.id === b.dataset.aviso), vInicio)));
+    abrirAviso(avisosTodos.find((a) => a.id === b.dataset.aviso), vInicio)));
   alClic("#leer-todo", async () => {
     await q(sb.from("novedad_lecturas").upsert(sinLeer.map((n) => ({ novedad_id: n.id, perfil_id: S.user.id })), { onConflict: "novedad_id,perfil_id", ignoreDuplicates: true }));
     aviso("Listo, todo leído.");
@@ -937,6 +1160,9 @@ async function vNuevaNovedad() {
         <label for="descripcion">¿Qué pasó? <span class="ayuda">(puedes dictar con el micrófono del teclado)</span></label>
         <textarea id="descripcion" name="descripcion" required maxlength="4000"></textarea>
         <p class="nota-datos">Del huésped anota solo lo necesario. Cédula o teléfono, únicamente si hacen falta para resolver.</p>
+        <label>Fotos <span class="ayuda">(opcional, hasta ${MAX_FOTOS})</span></label>
+        <div id="fotos-nov"></div>
+        <p class="nota-datos nota-foto">No fotografíes documentos ni la cara del huésped.</p>
         <label>Urgencia</label>
         <div class="opciones" role="radiogroup">${Object.entries(URG).map(([k, v]) => `<label><input type="radio" name="urgencia" value="${k}"><span>${v}</span></label>`).join("")}</div>
         <label>¿Quién debe enterarse? <span class="ayuda">(puedes tocar varias)</span></label>
@@ -952,6 +1178,7 @@ async function vNuevaNovedad() {
       </section>
     </form>`;
   const f = document.getElementById("f-nov");
+  const selFotos = selectorFotos(document.getElementById("fotos-nov"));
   let paso = 1;
   const mostrar = (n) => {
     paso = n;
@@ -1002,7 +1229,9 @@ async function vNuevaNovedad() {
       turno_id: turno?.id ?? null,
     };
     const r = await enviarOGuardar({ tipo: "novedad", datos: fila, resumen: desc.slice(0, 120) });
-    aviso(r.pendiente ? "Sin señal: la novedad quedó guardada en este celular y se enviará sola." : "Novedad guardada.");
+    const fotosPend = await guardarFotos(selFotos, { hotel_id: fila.hotel_id, novedad_id: fila.id }).catch((err) => { aviso(err.message, true); return false; });
+    aviso(r.pendiente ? "Sin señal: la novedad quedó guardada en este celular y se enviará sola."
+      : fotosPend ? "Novedad guardada. Las fotos se enviarán solas cuando haya señal." : "Novedad guardada.");
     ir("novedad/" + fila.id);
   });
 }
@@ -1010,14 +1239,17 @@ async function vNuevaNovedad() {
 async function vNovedad([id]) {
   // Una novedad escrita sin señal se muestra desde este celular hasta que se envíe
   const local = novedadesPendientes().find((x) => x.id === id);
-  const [n, comsServidor, lecturas, tareas] = local ? [local, [], [], []] : await Promise.all([
+  const [n, comsServidor, lecturas, tareas, fotosServidor] = local ? [local, [], [], [], []] : await Promise.all([
     q(sb.from("novedades").select(SEL_NOV + ", turno:turnos(nombre)").eq("id", id).maybeSingle()),
     q(sb.from("comentarios").select("*, autor:perfiles(nombre)").eq("novedad_id", id).order("creado_en")),
     q(sb.from("novedad_lecturas").select("perfil_id, leido_en, perfil:perfiles(nombre)").eq("novedad_id", id).order("leido_en")),
     q(sb.from("tareas").select(SEL_TAR).eq("novedad_id", id)),
+    q(sb.from("fotos").select("id, ruta, comentario_id, borrada_en").eq("novedad_id", id).order("creado_en")),
   ]);
   if (!n) throw new Error("Esta novedad no existe o no tienes acceso a ella.");
-  const coms = [...comsServidor, ...comentariosPendientes("novedad_id", id)];
+  const fotos = [...fotosServidor, ...fotosPendientes("novedad_id", id)];
+  const coms = [...comsServidor, ...comentariosPendientes("novedad_id", id)]
+    .map((c) => ({ ...c, fotos: fotos.filter((f) => f.comentario_id === c.id) }));
   if (!local && !lecturas.some((l) => l.perfil_id === S.user.id)) {
     sb.from("novedad_lecturas").upsert({ novedad_id: id, perfil_id: S.user.id }, { onConflict: "novedad_id,perfil_id", ignoreDuplicates: true }).then(() => {});
   }
@@ -1036,6 +1268,7 @@ async function vNovedad([id]) {
         ${local ? `<span class="chip pend-chip">Pendiente de enviar</span>` : `<span class="chip estado">${EST_N[n.estado]}</span>`}
         ${!propia ? `<span class="chip grupo">${esc(hotelDe(n.hotel_id))}</span>` : n.compartida_grupo ? `<span class="chip grupo">Compartida con el grupo</span>` : ""}</div>
       <p class="desc" style="font-size:1.05rem">${esc(n.descripcion)}</p>
+      ${fotosHtml(fotos.filter((f) => !f.comentario_id))}
       <div class="meta">${esc(n.autor?.nombre ?? "")} · ${fmtFecha.format(new Date(n.creado_en))}${n.turno ? " · turno " + esc(n.turno.nombre) : ""}</div>
       <div class="meta">${esc(paraTexto(n))}${n.lugar ? " · " + esc(n.lugar) : ""}</div>
       ${n.estado === "anulada" ? `<p class="error-txt">Anulada: ${esc(n.motivo_anulacion)}</p>` : ""}
@@ -1051,8 +1284,8 @@ async function vNovedad([id]) {
     ${local ? `<p class="ayuda">Guardada en este celular. Se enviará sola cuando vuelva la señal; después podrás cambiarle el estado o convertirla en tarea.</p>` : ""}
     <h2>Seguimiento (${coms.length})</h2>
     ${coms.map(comentarioHtml).join("") || `<p class="meta">Sin comentarios todavía.</p>`}
-    ${n.estado !== "anulada" ? `<form id="f-com"><label for="texto">Agregar seguimiento</label><textarea id="texto" name="texto" required maxlength="2000" style="min-height:80px"></textarea>
-      <div class="acciones"><button class="btn" type="submit">Comentar</button></div></form>` : ""}
+    ${n.estado !== "anulada" ? `<form id="f-com"><label for="texto">Agregar seguimiento</label><textarea id="texto" name="texto" maxlength="2000" style="min-height:80px"></textarea>
+      <div class="acciones"><button class="btn" type="submit">Comentar</button><div id="fotos-com"></div></div></form>` : ""}
     ${alMenos("jefe_servicio") && propia ? `<h2>Leída por (${lecturas.length})</h2>
       <p class="meta">${lecturas.map((l) => `${esc(l.perfil?.nombre ?? "")} (${fecha(l.leido_en)})`).join(", ") || "Nadie todavía."}</p>` : ""}`;
 
@@ -1066,13 +1299,17 @@ async function vNovedad([id]) {
     await q(sb.from("novedades").update({ estado: "anulada", motivo_anulacion: motivo }).eq("id", id));
     aviso("Novedad anulada."); vNovedad([id]);
   });
+  cargarFotos();
   const fc = document.getElementById("f-com");
+  const selCom = fc && selectorFotos(document.getElementById("fotos-com"), { chico: true });
   if (fc) alEnviar(fc, async (d) => {
     const texto = String(d.get("texto")).trim();
-    if (!texto) return;
-    const r = await enviarOGuardar({ tipo: "comentario", resumen: texto.slice(0, 120),
-      datos: { id: uuid(), novedad_id: id, texto, seguimiento: puedeEstado && n.estado === "abierta" } });
-    if (r.pendiente) aviso("Sin señal: el comentario quedó guardado en este celular y se enviará solo.");
+    if (!texto && !selCom.fotos.length) { fc.texto.focus(); return; }
+    const comId = uuid();
+    const r = await enviarOGuardar({ tipo: "comentario", resumen: texto.slice(0, 120) || "Foto",
+      datos: { id: comId, novedad_id: id, texto, seguimiento: puedeEstado && n.estado === "abierta" } });
+    const fotosPend = await guardarFotos(selCom, { hotel_id: n.hotel_id, novedad_id: id, comentario_id: comId }).catch((err) => { aviso(err.message, true); return false; });
+    if (r.pendiente || fotosPend) aviso("Sin señal: quedó guardado en este celular y se enviará solo.");
     vNovedad([id]);
   });
 }
@@ -1118,6 +1355,8 @@ async function vNuevaTarea(_, params) {
       <input id="titulo" name="titulo" type="text" required maxlength="140" value="${esc(nov ? (nov.tipo?.nombre ?? "") + (nov.lugar ? " · " + nov.lugar : "") : "")}">
       <label for="descripcion">Detalle <span class="ayuda">(opcional)</span></label>
       <textarea id="descripcion" name="descripcion" maxlength="4000" style="min-height:80px">${esc(nov?.descripcion ?? "")}</textarea>
+      <label>Fotos <span class="ayuda">(opcional, hasta ${MAX_FOTOS})</span></label>
+      <div id="fotos-tar"></div>
       <label>Asignar a</label>
       <div class="opciones">
         ${areas.length ? `<label><input type="radio" name="a" value="area" checked><span>Un área</span></label>` : ""}
@@ -1136,6 +1375,7 @@ async function vNuevaTarea(_, params) {
       <div class="acciones"><button class="btn" type="submit">Crear tarea</button><a class="btn sec" href="${nov ? "#/novedad/" + nov.id : "#/tareas"}">Cancelar</a></div>
     </form>`;
   const f = document.getElementById("f-tar");
+  const selFotos = selectorFotos(document.getElementById("fotos-tar"));
   f.querySelectorAll("input[name=a]").forEach((r) => r.addEventListener("change", () => {
     document.getElementById("sel-area").hidden = f.a.value === "persona";
     document.getElementById("sel-persona").hidden = f.a.value !== "persona";
@@ -1160,18 +1400,23 @@ async function vNuevaTarea(_, params) {
     };
     if (!fila.titulo) throw new Error("Escribe qué hay que hacer.");
     const t = await q(sb.from("tareas").insert(fila).select("id").single());
-    aviso("Tarea creada.");
+    const fotosPend = await guardarFotos(selFotos, { hotel_id: fila.hotel_id, tarea_id: t.id }).catch((err) => { aviso(err.message, true); return false; });
+    aviso(fotosPend ? "Tarea creada. Las fotos se enviarán solas cuando haya señal." : "Tarea creada.");
     ir("tarea/" + t.id);
   });
 }
 
 async function vTarea([id]) {
-  const [t, comsServidor] = await Promise.all([
+  const [t, comsServidor, fotosServidor] = await Promise.all([
     q(sb.from("tareas").select(SEL_TAR + ", novedad:novedades(id, descripcion)").eq("id", id).maybeSingle()),
     q(sb.from("comentarios").select("*, autor:perfiles(nombre)").eq("tarea_id", id).order("creado_en")),
+    q(sb.from("fotos").select("id, ruta, comentario_id, de_cierre, borrada_en").eq("tarea_id", id).order("creado_en")),
   ]);
   if (!t) throw new Error("Esta tarea no existe o no tienes acceso a ella.");
-  const coms = [...comsServidor, ...comentariosPendientes("tarea_id", id)];
+  const fotos = [...fotosServidor, ...fotosPendientes("tarea_id", id)];
+  const coms = [...comsServidor, ...comentariosPendientes("tarea_id", id)]
+    .map((c) => ({ ...c, fotos: fotos.filter((f) => f.comentario_id === c.id) }));
+  const fotosCierre = fotos.filter((f) => f.de_cierre);
   const propia = t.hotel_id === S.hotel.id;
   // Asigna y cancela el jefe o líder del área de la tarea, o el gerente
   const jefe = propia && nivel(rolEnArea(t.area_id)) >= nivel("jefe_servicio");
@@ -1187,11 +1432,13 @@ async function vTarea([id]) {
       <div class="fila" style="margin-top:8px"><span class="chip u-${t.urgencia}">${URG[t.urgencia]}</span>${vencida(t) ? `<span class="chip vencida">Vencida</span>` : ""}
         ${!propia ? `<span class="chip grupo">${esc(hotelDe(t.hotel_id))}</span>` : ""}</div>
       ${t.descripcion ? `<p class="desc">${esc(t.descripcion)}</p>` : ""}
+      ${fotosHtml(fotos.filter((f) => !f.comentario_id && !f.de_cierre))}
       <div class="meta">Asignada: <strong>${esc(asignadoTexto(t))}</strong>${t.asignada_por && t.asignada_por !== t.asignada_a ? " (por " + esc(nombreDe(t.asignada_por)) + ")" : ""}</div>
       <div class="meta">Creada por ${esc(t.creador?.nombre ?? "")} · ${fecha(t.creado_en)}${t.fecha_limite ? " · vence " + fmtFecha.format(new Date(t.fecha_limite)) : ""}</div>
       ${t.novedad ? `<div class="meta">Origen: <a href="#/novedad/${t.novedad.id}">${esc(t.novedad.descripcion.slice(0, 80))}</a></div>
         ${abierta ? `<div class="ayuda">Cuando se terminen todas las tareas de esa novedad, la novedad se cierra sola.</div>` : ""}` : ""}
       ${t.estado === "hecha" ? `<p class="meta">Hecha ${fecha(t.completada_en)}${t.nota_cierre ? ": " + esc(t.nota_cierre) : ""}</p>` : ""}
+      ${fotosCierre.length ? `<div class="meta">Cómo quedó:</div>${fotosHtml(fotosCierre, true)}` : ""}
     </div>
     <div class="acciones">
       ${puedeTomar ? `<button class="btn" id="tomar">Tomarla yo</button>` : ""}
@@ -1203,8 +1450,9 @@ async function vTarea([id]) {
     </div>
     <h2>Comentarios (${coms.length})</h2>
     ${coms.map(comentarioHtml).join("") || `<p class="meta">Sin comentarios todavía.</p>`}
-    <form id="f-com"><label for="texto">Agregar comentario</label><textarea id="texto" name="texto" required maxlength="2000" style="min-height:80px"></textarea>
-      <div class="acciones"><button class="btn" type="submit">Comentar</button></div></form>`;
+    <form id="f-com"><label for="texto">Agregar comentario</label><textarea id="texto" name="texto" maxlength="2000" style="min-height:80px"></textarea>
+      <div class="acciones"><button class="btn" type="submit">Comentar</button><div id="fotos-com"></div></div></form>`;
+  cargarFotos();
 
   const actualizar = async (cambios, msg) => {
     await q(sb.from("tareas").update(cambios).eq("id", id));
@@ -1218,12 +1466,18 @@ async function vTarea([id]) {
     const nota = await new Promise((res) => {
       const d = dialogo(`<form method="dialog"><h2 style="margin-top:0">Marcar como hecha</h2>
         <label for="nota">Nota de cierre <span class="ayuda">(opcional)</span></label><textarea id="nota" style="min-height:80px"></textarea>
+        <label>Foto de cómo quedó <span class="ayuda">(opcional)</span></label><div id="fotos-cierre"></div>
         <div class="acciones"><button class="btn" value="si">Marcar hecha</button><button class="btn sec" type="button" data-cerrar>Volver</button></div></form>`);
-      d.querySelector("form").addEventListener("submit", () => res({ nota: d.querySelector("#nota").value.trim() }));
+      const sel = selectorFotos(d.querySelector("#fotos-cierre"), { chico: true });
+      d.querySelector("form").addEventListener("submit", () => res({ nota: d.querySelector("#nota").value.trim(), sel }));
       d.addEventListener("close", () => res(null));
     });
     if (!nota) return;
-    await actualizar({ estado: "hecha", completada_en: new Date().toISOString(), nota_cierre: nota.nota || null }, "Tarea hecha.");
+    await q(sb.from("tareas").update({ estado: "hecha", completada_en: new Date().toISOString(), nota_cierre: nota.nota || null }).eq("id", id));
+    const fotosPend = await guardarFotos(nota.sel, { hotel_id: t.hotel_id, tarea_id: id, de_cierre: true }).catch((err) => { aviso(err.message, true); return false; });
+    aviso((t.novedad ? "Tarea hecha. Si era la última tarea, la novedad quedó cerrada." : "Tarea hecha.")
+      + (fotosPend ? " La foto se enviará sola cuando haya señal." : ""));
+    vTarea([id]);
   });
   alClic("#asignar", async () => {
     const elegido = await new Promise((res) => {
@@ -1236,11 +1490,15 @@ async function vTarea([id]) {
     if (!elegido) return;
     await actualizar({ asignada_a: elegido, asignada_por: S.user.id, siguiente_turno: false }, "Tarea asignada a " + nombreDe(elegido) + ".");
   });
-  alEnviar(document.getElementById("f-com"), async (d) => {
+  const fc = document.getElementById("f-com");
+  const selCom = selectorFotos(document.getElementById("fotos-com"), { chico: true });
+  alEnviar(fc, async (d) => {
     const texto = String(d.get("texto")).trim();
-    if (!texto) return;
-    const r = await enviarOGuardar({ tipo: "comentario", resumen: texto.slice(0, 120), datos: { id: uuid(), tarea_id: id, texto } });
-    if (r.pendiente) aviso("Sin señal: el comentario quedó guardado en este celular y se enviará solo.");
+    if (!texto && !selCom.fotos.length) { fc.texto.focus(); return; }
+    const comId = uuid();
+    const r = await enviarOGuardar({ tipo: "comentario", resumen: texto.slice(0, 120) || "Foto", datos: { id: comId, tarea_id: id, texto } });
+    const fotosPend = await guardarFotos(selCom, { hotel_id: t.hotel_id, tarea_id: id, comentario_id: comId }).catch((err) => { aviso(err.message, true); return false; });
+    if (r.pendiente || fotosPend) aviso("Sin señal: quedó guardado en este celular y se enviará solo.");
     vTarea([id]);
   });
 }
@@ -1391,7 +1649,7 @@ function pestanasAjustes() {
     ...(lidera ? [["turnos", "Turnos"]] : []),
     ...(esAdmin() ? [["tipos", "Tipos de novedad"]] : []),
     ...(lidera && usaModulo("checklist") ? [["checklists", "Checklists"]] : []),
-    ...(S.perfil.es_admin_global ? [["todas", "Todas las personas"], ["modulos", "Módulos"], ["hoteles", "Hoteles"]] : [])];
+    ...(S.perfil.es_admin_global ? [["todas", "Todas las personas"], ["modulos", "Módulos"], ["hoteles", "Hoteles"], ["fotos", "Fotos"]] : [])];
 }
 
 async function vAdmin(_, params) {
@@ -1413,7 +1671,7 @@ async function vAdmin(_, params) {
     vAdmin(_, params);
   });
   const recargar = async () => { await entrarAlHotel(S.hotel.id); vAdmin(_, params); };
-  ({ personas: aPersonas, areas: aAreas, turnos: aTurnos, tipos: aTipos, checklists: aChecklists, modulos: aModulos, hoteles: aHoteles, todas: aTodas }[tab])(panel, recargar);
+  ({ personas: aPersonas, areas: aAreas, turnos: aTurnos, tipos: aTipos, checklists: aChecklists, modulos: aModulos, hoteles: aHoteles, todas: aTodas, fotos: aFotos }[tab])(panel, recargar);
 }
 
 // Rol y área: operador y jefe tienen una área; el líder, una o varias; el gerente maneja todo el hotel.
@@ -1752,6 +2010,41 @@ async function aChecklists(panel, recargar) {
 }
 
 // Solo el administrador: cada persona con los hoteles donde trabaja, su rol y su área en cada uno
+// Espacio de las fotos (todos los hoteles comparten 1 GB). Nada se borra solo: el Administrador decide.
+const mb = (b) => (b / 1024 ** 2).toLocaleString("es-CO", { maximumFractionDigits: b < 10 * 1024 ** 2 ? 1 : 0 }) + " MB";
+async function aFotos(panel) {
+  const e = await q(sb.rpc("espacio_fotos"));
+  S.espacioFotos = e;
+  const pct = Math.min(100, Math.round(e.bytes / LIMITE_FOTOS * 100));
+  const promedio = e.fotos ? e.bytes / e.fotos : 150000;
+  const quedan = Math.max(0, Math.floor((LIMITE_FOTOS - e.bytes) / promedio));
+  panel.innerHTML = `<div class="tarjeta"><strong>Espacio para fotos</strong>
+      <div class="medidor ${pct >= 80 ? "lleno" : ""}"><i style="width:${pct}%"></i></div>
+      <div class="meta">${mb(e.bytes)} de 1 GB usados (${pct} %) · ${e.fotos.toLocaleString("es-CO")} ${e.fotos === 1 ? "foto" : "fotos"}</div>
+      <div class="meta">Quedan para unas ${quedan.toLocaleString("es-CO")} fotos más.</div>
+      <p class="ayuda">Es el total de todos los hoteles. Cuando pase del 80 %, te aparece un aviso en Mi turno.</p></div>
+    <div class="tarjeta"><strong>Fotos de más de 6 meses</strong>
+      <div class="meta">${e.viejas.toLocaleString("es-CO")} ${e.viejas === 1 ? "foto" : "fotos"} · ${mb(e.viejas_bytes)}</div>
+      <button class="btn sec chico" id="borrar-viejas" style="margin-top:8px" ${e.viejas ? "" : "disabled"}>Borrar fotos viejas…</button>
+      <p class="ayuda">Solo se borra la foto; la novedad, la tarea y su texto quedan, con la nota "Foto borrada".</p></div>`;
+  alClic("#borrar-viejas", async () => {
+    if (!(await confirmar(`Se borrarán ${e.viejas} fotos de más de 6 meses (${mb(e.viejas_bytes)}) en todos los hoteles. Las novedades y tareas quedan. No se puede deshacer.`,
+      { boton: "Borrar fotos", peligro: true }))) return;
+    const antes = new Date(Date.now() - 182 * 864e5).toISOString();
+    let borradas = 0;
+    for (;;) {
+      const lote = await q(sb.from("fotos").select("id, ruta").is("borrada_en", null).lt("creado_en", antes).limit(100));
+      if (!lote.length) break;
+      const { error } = await sb.storage.from("fotos").remove(lote.map((f) => f.ruta));
+      if (error) throw new Error("No se pudieron borrar: " + error.message);
+      await q(sb.from("fotos").update({ borrada_en: new Date().toISOString() }).in("id", lote.map((f) => f.id)));
+      borradas += lote.length;
+    }
+    aviso(`Listo: se borraron ${borradas} fotos.`);
+    aFotos(panel);
+  }, panel);
+}
+
 async function aTodas(panel) {
   const [perfiles, membs] = await Promise.all([
     q(sb.from("perfiles").select("id, nombre, correo, es_admin_global").order("nombre")),

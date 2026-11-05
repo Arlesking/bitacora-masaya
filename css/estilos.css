@@ -283,3 +283,37 @@ button.aviso-t { cursor: pointer; }
 .aviso-t small { display: block; color: #7a5d00; font-weight: 600; font-size: .85rem; }
 .vacio.chico { padding: 4px 0 12px; text-align: left; font-size: .9rem; }
 .fichas.envolver { flex-wrap: wrap; overflow: visible; }
+
+/* Tener en cuenta: avisos programados (empiezan otro día; solo los ve quien maneja avisos) */
+.programados { margin: 2px 0 10px; }
+.programados summary { cursor: pointer; font-weight: 600; color: var(--suave); padding: 8px 0; min-height: 40px; }
+.aviso-t.programado { background: var(--superficie); border-style: dashed; }
+.aviso-t.programado svg, .aviso-t.programado small { color: #6b6b6b; }
+
+/* Fotos */
+.fotos { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+.foto { position: relative; width: 84px; height: 84px; flex: none; border-radius: 10px; border: 1px solid var(--borde);
+  background: #eef0f3; padding: 0; overflow: visible; cursor: pointer; display: block; }
+.foto img { width: 100%; height: 100%; object-fit: cover; border-radius: 9px; display: block; }
+.fotos.mini .foto { width: 64px; height: 64px; }
+.foto .quitar { position: absolute; top: -8px; right: -8px; width: 28px; height: 28px; border-radius: 50%; border: 2px solid #fff;
+  background: var(--texto); color: #fff; font-size: 16px; line-height: 1; cursor: pointer; display: grid; place-items: center; padding: 0; }
+.foto .por-subir { position: absolute; left: 4px; bottom: 4px; z-index: 1; font-size: .65rem; background: #fff7db; color: #7a5d00; border-radius: 6px; padding: 1px 5px; }
+.foto.borrada { display: grid; place-items: center; text-align: center; font-size: .7rem; color: var(--suave); cursor: default; padding: 4px; }
+.foto.sin-cargar { cursor: default; }
+.agregar-foto { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 6px 0 0; padding: 12px;
+  border: 1.5px dashed var(--marca); border-radius: var(--radio); background: var(--marca-claro); color: var(--marca); font-weight: 600; cursor: pointer; }
+.agregar-foto.chico { width: auto; margin: 0; padding: 8px 14px; min-height: 44px; border-style: solid; border-width: 1px; background: var(--superficie); border-radius: 10px; }
+.agregar-foto.cargando-foto { opacity: .6; pointer-events: none; }
+.agregar-foto .cuenta { font-size: .8rem; color: var(--suave); font-weight: 400; }
+#fotos-com, #fotos-cierre { display: contents; }
+#fotos-cierre .fotos { width: 100%; }
+.acciones #fotos-com .fotos { width: 100%; order: -1; margin: 0 0 4px; }
+.con-fotos { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; vertical-align: -3px; }
+.con-fotos svg { width: 16px; height: 16px; }
+dialog.dlg-foto { padding: 8px; max-width: 96vw; max-height: 96vh; background: #111; border: 0; }
+.ver-foto img { display: block; max-width: calc(96vw - 16px); max-height: calc(96vh - 80px); margin: 0 auto 8px; border-radius: 6px; }
+.medidor { height: 12px; border-radius: 99px; background: #eef0f3; overflow: hidden; margin: 8px 0; }
+.medidor i { display: block; height: 100%; background: var(--marca); }
+.medidor.lleno i { background: var(--alta); }
+.franja-fotos { display: block; background: #fdf1e1; color: #7a4504; border-color: #f3c98b; text-decoration: none; font-weight: 600; }
