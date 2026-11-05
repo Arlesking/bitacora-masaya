@@ -294,7 +294,6 @@ const novedadesPendientes = () => cola().filter((op) => op.tipo === "novedad" &&
 }));
 const comentariosPendientes = (campo, id) => cola().filter((op) => op.tipo === "comentario" && op.datos[campo] === id)
   .map((op) => ({ ...op.datos, creado_en: op.en, autor: { nombre: S.perfil.nombre }, pendiente: true }));
-const comentarioHtml = (c) => `<div class="comentario"><div class="meta">${esc(c.autor?.nombre ?? "")} · ${c.pendiente ? `<span class="chip pend-chip">Pendiente de enviar</span>` : fecha(c.creado_en)}</div>${c.texto ? `<div class="desc">${esc(c.texto)}</div>` : ""}${fotosHtml(c.fotos ?? [], true)}</div>`;
 
 // ===== Fotos =====
 // Se achican en el celular (lado largo 1600 px, JPEG, unos 150 KB) y así pierden la ubicación GPS.
@@ -1243,15 +1242,80 @@ async function vNuevaNovedad() {
   });
 }
 
+// ===== Historial de cada novedad y tarea =====
+// Junta lo que guarda el registro de actividad (creación y cambios) con los comentarios, en orden.
+// Lo ve todo el que ve esa novedad o tarea (migración 020); si el registro no responde, quedan los comentarios.
+async function registroDe(tabla, id) {
+  try { return await q(sb.from("log_auditoria").select("en, perfil_id, accion, antes, despues").eq("tabla", tabla).eq("registro_id", id).order("en")); }
+  catch { return []; }
+}
+const quienHizo = (id) => (id ? (S.personas.find((p) => p.id === id)?.nombre ?? "Alguien") : "Sistema");
+const limiteTexto = (v) => (v ? fmtFecha.format(new Date(v)) : "sin fecha");
+
+// Cada fila del registro se vuelve uno o varios renglones: { q: qué pasó, est: cambio de estado, ok: terminó, texto: nota }
+function cambiosTarea(r) {
+  const d = r.despues ?? {}, a = r.antes ?? {};
+  if (r.accion === "INSERT") {
+    const para = d.asignada_a ? "para " + quienHizo(d.asignada_a) : d.siguiente_turno ? "para el siguiente turno" : d.area_id ? "para la bandeja de " + areaDe(d.area_id) : "";
+    return [{ q: "Creada por " + quienHizo(r.perfil_id), extra: [para, d.fecha_limite ? "vence " + limiteTexto(d.fecha_limite) : ""].filter(Boolean).join(" · ") }];
+  }
+  if (r.accion !== "UPDATE") return [];
+  const c = [], cambio = (k) => JSON.stringify(a[k] ?? null) !== JSON.stringify(d[k] ?? null);
+  if (cambio("asignada_a")) c.push({ q: !d.asignada_a ? "Quedó sin asignar" : d.asignada_a === r.perfil_id && !a.asignada_a ? "La tomó " + quienHizo(d.asignada_a) : "Asignada a " + quienHizo(d.asignada_a), est: true });
+  else if (cambio("area_id")) c.push({ q: `Área: ${areaDe(a.area_id)} → ${areaDe(d.area_id)}` });
+  if (cambio("siguiente_turno") && d.siguiente_turno) c.push({ q: "Pasó al siguiente turno" });
+  if (cambio("estado")) c.push({ q: `${EST_T[a.estado] ?? a.estado} → ${EST_T[d.estado] ?? d.estado}`, est: true, ok: d.estado === "hecha", texto: d.estado === "hecha" ? d.nota_cierre : null });
+  if (cambio("urgencia")) c.push({ q: `Urgencia: ${URG[a.urgencia]} → ${URG[d.urgencia]}` });
+  if (cambio("fecha_limite")) c.push({ q: `Fecha límite: ${limiteTexto(a.fecha_limite)} → ${limiteTexto(d.fecha_limite)}` });
+  if (cambio("titulo")) c.push({ q: "Cambió el título", texto: d.titulo });
+  if (cambio("descripcion")) c.push({ q: "Cambió el detalle" });
+  return c;
+}
+function cambiosNovedad(r) {
+  const d = r.despues ?? {}, a = r.antes ?? {};
+  if (r.accion === "INSERT") return [{ q: "Escrita por " + quienHizo(r.perfil_id), extra: paraTexto(d) }];
+  if (r.accion !== "UPDATE") return [];
+  const c = [], cambio = (k) => JSON.stringify(a[k] ?? null) !== JSON.stringify(d[k] ?? null);
+  if (cambio("estado")) c.push(d.estado === "anulada" ? { q: "Anulada", est: true, texto: d.motivo_anulacion }
+    : { q: `${EST_N[a.estado] ?? a.estado} → ${EST_N[d.estado] ?? d.estado}`, est: true, ok: d.estado === "cerrada" });
+  if (cambio("urgencia")) c.push({ q: `Urgencia: ${URG[a.urgencia]} → ${URG[d.urgencia]}` });
+  if (["para_areas", "para_area_id", "para_perfil_id"].some(cambio)) c.push({ q: "Ahora es " + paraTexto(d).toLowerCase() });
+  if (cambio("tipo_id")) c.push({ q: "Cambió el tipo" });
+  if (cambio("lugar")) c.push({ q: "Lugar: " + (d.lugar || "sin lugar") });
+  if (cambio("descripcion")) c.push({ q: "Cambió el texto" });
+  return c;
+}
+
+// creacion: el renglón de "creada/escrita" armado con la propia fila, por si el registro no lo trae
+function historialHtml(registro, coms, convertir, creacion) {
+  const ev = registro.flatMap((r) => convertir(r).map((x) => ({ ...x, en: r.en, por: r.accion === "INSERT" ? "" : quienHizo(r.perfil_id) })));
+  if (!registro.some((r) => r.accion === "INSERT")) ev.unshift(creacion);
+  for (const c of coms) ev.push({ q: (c.autor?.nombre ?? "Alguien") + " comentó", en: c.creado_en, pendiente: c.pendiente, com: c });
+  ev.sort((x, y) => (!!x.pendiente - !!y.pendiente) || (new Date(x.en) - new Date(y.en)));
+  return `<div class="linea">${ev.map((e) => `<div class="ev ${e.ok ? "ok" : e.est ? "est" : ""}">
+      <div class="q">${esc(e.q)}</div>
+      <div class="meta">${e.pendiente ? `<span class="chip pend-chip">Pendiente de enviar</span>` : fmtFecha.format(new Date(e.en))}${e.por ? " · " + esc(e.por) : ""}${e.extra ? " · " + esc(e.extra) : ""}</div>
+      ${e.com ? `<div class="com">${e.com.texto ? `<div class="desc">${esc(e.com.texto)}</div>` : ""}${fotosHtml(e.com.fotos ?? [], true)}</div>` : e.texto ? `<div class="com"><div class="desc">${esc(e.texto)}</div></div>` : ""}
+    </div>`).join("")}</div>`;
+}
+
+// Barra de pasos con el estado actual (Pendiente → En curso → Hecha; Abierta → En seguimiento → Cerrada)
+function pasosEstado(pasos, nombres, actual) {
+  const i = pasos.indexOf(actual);
+  if (i < 0) return "";
+  return `<div class="estados" role="img" aria-label="Estado: ${esc(nombres[actual])}">${pasos.map((p, j) => `<div class="${j <= i ? "on" : ""}"><i></i>${esc(nombres[p])}</div>`).join("")}</div>`;
+}
+
 async function vNovedad([id]) {
   // Una novedad escrita sin señal se muestra desde este celular hasta que se envíe
   const local = novedadesPendientes().find((x) => x.id === id);
-  const [n, comsServidor, lecturas, tareas, fotosServidor] = local ? [local, [], [], [], []] : await Promise.all([
+  const [n, comsServidor, lecturas, tareas, fotosServidor, registro] = local ? [local, [], [], [], [], []] : await Promise.all([
     q(sb.from("novedades").select(SEL_NOV + ", turno:turnos(nombre)").eq("id", id).maybeSingle()),
     q(sb.from("comentarios").select("*, autor:perfiles(nombre)").eq("novedad_id", id).order("creado_en")),
     q(sb.from("novedad_lecturas").select("perfil_id, leido_en, perfil:perfiles(nombre)").eq("novedad_id", id).order("leido_en")),
     q(sb.from("tareas").select(SEL_TAR).eq("novedad_id", id)),
     q(sb.from("fotos").select("id, ruta, comentario_id, borrada_en").eq("novedad_id", id).order("creado_en")),
+    registroDe("novedades", id),
   ]);
   if (!n) throw new Error("Esta novedad no existe o no tienes acceso a ella.");
   const fotos = [...fotosServidor, ...fotosPendientes("novedad_id", id)];
@@ -1272,8 +1336,9 @@ async function vNovedad([id]) {
   app.innerHTML = `<p><a href="#/novedades">← Novedades</a></p>
     <div class="tarjeta borde-tipo ${n.estado === "anulada" ? "anulada" : ""}" style="--tipo:${esc(color)}">
       <div class="fila"><span class="chip tipo">${esc(n.tipo?.nombre ?? "")}</span><span class="chip u-${n.urgencia}">${URG[n.urgencia]}</span>
-        ${local ? `<span class="chip pend-chip">Pendiente de enviar</span>` : `<span class="chip estado">${EST_N[n.estado]}</span>`}
+        ${local ? `<span class="chip pend-chip">Pendiente de enviar</span>` : n.estado === "anulada" ? `<span class="chip estado">${EST_N[n.estado]}</span>` : ""}
         ${!propia ? `<span class="chip grupo">${esc(hotelDe(n.hotel_id))}</span>` : n.compartida_grupo ? `<span class="chip grupo">Compartida con el grupo</span>` : ""}</div>
+      ${pasosEstado(["abierta", "seguimiento", "cerrada"], EST_N, local ? "" : n.estado)}
       <p class="desc" style="font-size:1.05rem">${esc(n.descripcion)}</p>
       ${fotosHtml(fotos.filter((f) => !f.comentario_id))}
       <div class="meta">${esc(n.autor?.nombre ?? "")} · ${fmtFecha.format(new Date(n.creado_en))}${n.turno ? " · turno " + esc(n.turno.nombre) : ""}</div>
@@ -1289,8 +1354,8 @@ async function vNovedad([id]) {
       ${tareasAbiertas && n.estado !== "cerrada" ? `<p class="ayuda">No se puede cerrar todavía: tiene ${tareasAbiertas} ${tareasAbiertas === 1 ? "tarea abierta" : "tareas abiertas"}. Se cerrará sola cuando se terminen.</p>` : ""}` : ""}
     ${tareas.length ? `<h2>Tareas creadas desde esta novedad</h2>${tareas.map(tarjetaTarea).join("")}` : ""}
     ${local ? `<p class="ayuda">Guardada en este celular. Se enviará sola cuando vuelva la señal; después podrás cambiarle el estado o convertirla en tarea.</p>` : ""}
-    <h2>Seguimiento (${coms.length})</h2>
-    ${coms.map(comentarioHtml).join("") || `<p class="meta">Sin comentarios todavía.</p>`}
+    <h2>Historial</h2>
+    ${historialHtml(registro, coms, cambiosNovedad, { q: "Escrita por " + (n.autor?.nombre ?? "Alguien"), en: n.creado_en, extra: paraTexto(n) })}
     ${n.estado !== "anulada" ? `<form id="f-com"><label for="texto">Agregar seguimiento</label><textarea id="texto" name="texto" maxlength="2000" style="min-height:80px"></textarea>
       <div class="acciones"><button class="btn" type="submit">Comentar</button><div id="fotos-com"></div></div></form>` : ""}
     ${alMenos("jefe_servicio") && propia ? `<h2>Leída por (${lecturas.length})</h2>
@@ -1411,10 +1476,11 @@ async function vNuevaTarea(_, params) {
 }
 
 async function vTarea([id]) {
-  const [t, comsServidor, fotosServidor] = await Promise.all([
+  const [t, comsServidor, fotosServidor, registro] = await Promise.all([
     q(sb.from("tareas").select(SEL_TAR + ", novedad:novedades(id, descripcion)").eq("id", id).maybeSingle()),
     q(sb.from("comentarios").select("*, autor:perfiles(nombre)").eq("tarea_id", id).order("creado_en")),
     q(sb.from("fotos").select("id, ruta, comentario_id, de_cierre, borrada_en").eq("tarea_id", id).order("creado_en")),
+    registroDe("tareas", id),
   ]);
   if (!t) throw new Error("Esta tarea no existe o no tienes acceso a ella.");
   const fotos = [...fotosServidor, ...fotosPendientes("tarea_id", id)];
@@ -1435,7 +1501,8 @@ async function vTarea([id]) {
 
   app.innerHTML = `<p><a href="#/tareas">← Tareas</a></p>
     <div class="tarjeta">
-      <div class="fila entre"><span class="titulo" style="font-size:1.1rem">${esc(t.titulo)}</span><span class="chip estado">${EST_T[t.estado]}</span></div>
+      <div class="fila entre"><span class="titulo" style="font-size:1.1rem">${esc(t.titulo)}</span>${t.estado === "cancelada" ? `<span class="chip estado">${EST_T[t.estado]}</span>` : ""}</div>
+      ${pasosEstado(["pendiente", "en_curso", "hecha"], EST_T, t.estado)}
       <div class="fila" style="margin-top:8px"><span class="chip u-${t.urgencia}">${URG[t.urgencia]}</span>${vencida(t) ? `<span class="chip vencida">Vencida</span>` : ""}
         ${!propia ? `<span class="chip grupo">${esc(hotelDe(t.hotel_id))}</span>` : ""}</div>
       ${t.descripcion ? `<p class="desc">${esc(t.descripcion)}</p>` : ""}
@@ -1458,8 +1525,8 @@ async function vTarea([id]) {
       ${(jefe || t.creado_por === S.user.id) && propia && abierta ? `<button class="btn peligro chico" data-estado="cancelada">Cancelar tarea</button>` : ""}
       ${puedeMover && !abierta ? `<button class="btn sec" data-estado="pendiente">Reabrir</button>` : ""}
     </div>
-    <h2>Comentarios (${coms.length})</h2>
-    ${coms.map(comentarioHtml).join("") || `<p class="meta">Sin comentarios todavía.</p>`}
+    <h2>Historial</h2>
+    ${historialHtml(registro, coms, cambiosTarea, { q: "Creada por " + (t.creador?.nombre ?? "Alguien"), en: t.creado_en, extra: asignadoTexto(t) })}
     <form id="f-com"><label for="texto">Agregar comentario</label><textarea id="texto" name="texto" maxlength="2000" style="min-height:80px"></textarea>
       <div class="acciones"><button class="btn" type="submit">Comentar</button><div id="fotos-com"></div></div></form>`;
   cargarFotos();
