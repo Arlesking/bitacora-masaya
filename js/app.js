@@ -785,12 +785,19 @@ function asignadoTexto(t) {
   if (t.area_id) return "Bandeja de " + areaDe(t.area_id);
   return "Sin asignar";
 }
+// Horas que lleva una tarea en la bandeja sin que nadie la tome (se marca desde las 2 horas)
+function horasSinTomar(t) {
+  if (t.asignada_a || t.estado !== "pendiente") return 0;
+  const h = Math.floor((Date.now() - new Date(t.creado_en)) / 36e5);
+  return h >= 2 ? h : 0;
+}
+const sinTomarTexto = (h) => "Sin tomar hace " + (h < 48 ? h + " h" : Math.floor(h / 24) + " días");
 function tarjetaTarea(t) {
-  const urgente = URGENTE.includes(t.urgencia);
+  const urgente = URGENTE.includes(t.urgencia), sinTomar = horasSinTomar(t);
   return `<a class="tarjeta tar ${urgente ? "urg-" + t.urgencia : ""}" href="#/tarea/${t.id}">
     <div class="fila entre"><span class="titulo">${esc(t.titulo)}</span>
       <span class="fila">${urgente ? `<span class="urg">${URG[t.urgencia]}</span>` : ""}${t.estado !== "pendiente" ? `<span class="chip estado">${EST_T[t.estado]}</span>` : ""}</span></div>
-    <div class="fila" style="margin-top:4px">${vencida(t) ? `<span class="chip vencida">Vencida</span>` : ""}
+    <div class="fila" style="margin-top:4px">${vencida(t) ? `<span class="chip vencida">Vencida</span>` : ""}${sinTomar ? `<span class="chip vencida">${sinTomarTexto(sinTomar)}</span>` : ""}
       ${t.hotel_id !== S.hotel.id ? `<span class="chip grupo">${esc(hotelDe(t.hotel_id))}</span>` : ""}
       <span class="meta">${iconoFotos(t)}${esc(asignadoTexto(t))}${t.fecha_limite ? " · vence " + fecha(t.fecha_limite) : ""}</span></div>
   </a>`;
@@ -841,14 +848,14 @@ function abrirMas() {
   d.querySelector("#mas-hotel")?.addEventListener("click", () => { d.close(); S.hotel = null; ir("hotel"); });
 }
 
-// "Nueva": el operador va directo a la novedad; del jefe de servicio hacia arriba elige novedad o tarea.
+// "Nueva": todos eligen novedad o tarea.
 function abrirNueva(e) {
-  if (!S.hotel || !alMenos("jefe_servicio")) return;
+  if (!S.hotel) return;
   e.preventDefault();
   const it = (ruta, icono, texto, ayuda) => `<a class="hoja-it" href="#/${ruta}" data-cerrar><svg viewBox="0 0 24 24" aria-hidden="true">${icono}</svg><span>${texto}<br><small class="meta">${ayuda}</small></span></a>`;
   const d = dialogo(`<div class="hoja-asa" data-cerrar></div><nav aria-label="Nueva">
     ${it("nueva-novedad", `<path d="M5 4h14v16H5z"/><path d="M8 9h8M8 13h8M8 17h5"/>`, "Novedad", "Contar algo que pasó")}
-    ${it("nueva-tarea", `<path d="M4 6l2 2 4-4M4 14l2 2 4-4"/><path d="M13 7h7M13 15h7"/>`, "Tarea", "Para un área o una persona")}
+    ${it("nueva-tarea", `<path d="M4 6l2 2 4-4M4 14l2 2 4-4"/><path d="M13 7h7M13 15h7"/>`, "Tarea", "Para tu área u otra área")}
   </nav>`);
   d.classList.add("hoja");
   d.addEventListener("click", (ev) => { if (ev.target === d) d.close(); });
@@ -994,7 +1001,7 @@ async function vInicio() {
     misTareas(),
     S.misAreas.length || todoElHotel()
       ? q((todoElHotel() ? sb.from("tareas").select(SEL_TAR).eq("hotel_id", S.hotel.id) : sb.from("tareas").select(SEL_TAR).in("area_id", S.misAreas))
-        .is("asignada_a", null).eq("estado", "pendiente").order("creado_en", { ascending: false }).limit(50))
+        .is("asignada_a", null).eq("estado", "pendiente").order("creado_en").limit(50))
       : Promise.resolve([]),
     q(visibles(sb.from("novedades").select(SEL_NOV)).in("estado", ["abierta", "seguimiento"]).in("urgencia", URGENTE)
       .order("creado_en", { ascending: false }).limit(20)),
@@ -1406,33 +1413,26 @@ async function vTareas(_, params) {
 async function vNuevaTarea(_, params) {
   const novId = params.get("novedad");
   const nov = novId ? await q(sb.from("novedades").select("id, descripcion, lugar, urgencia, para_area_id, para_areas, tipo:tipos_novedad(nombre)").eq("id", novId).maybeSingle()) : null;
-  // Gerente y administrador: cualquier área y persona del hotel. Jefe y líder: sus áreas y su gente.
-  // Operador: su área o él mismo. La base de datos aplica lo mismo.
-  const jefe = alMenos("jefe_servicio");
-  const areas = S.areas.filter((a) => a.activa && (todoElHotel() || esMia(a.id)));
-  const deMisAreas = (p) => esMia(p.area_id) || p.areas.some(esMia);
-  const personas = S.personas.filter((p) => p.activa && (p.id === S.user.id || (jefe && (todoElHotel() || deMisAreas(p)))));
-  const areaInicial = nov?.para_areas?.[0] ?? nov?.para_area_id ?? S.area ?? areas[0]?.id;
+  // Toda tarea va a un área. Cualquiera la manda a la bandeja de cualquier área del hotel.
+  // Elegir a la persona es del jefe, líder o gerente de esa área; "Yo" solo en mis áreas. La base de datos aplica lo mismo (021).
+  const areas = S.areas.filter((a) => a.activa);
+  const areaInicial = nov?.para_areas?.[0] ?? nov?.para_area_id ?? S.area ?? S.misAreas.find((x) => areas.some((a) => a.id === x)) ?? areas[0]?.id;
+  const delArea = (areaId) => S.personas.filter((p) => p.activa && (p.area_id === areaId || p.areas.includes(areaId)));
 
   app.innerHTML = `<h1>Nueva tarea</h1>
     ${nov ? `<p class="meta">Desde la novedad: ${esc(nov.tipo?.nombre ?? "")} · ${esc(nov.descripcion.slice(0, 90))}</p>` : ""}
     <form id="f-tar">
       <label for="titulo">¿Qué hay que hacer?</label>
       <input id="titulo" name="titulo" type="text" required maxlength="140" value="${esc(nov ? (nov.tipo?.nombre ?? "") + (nov.lugar ? " · " + nov.lugar : "") : "")}">
+      <label for="area">¿Para qué área?</label>
+      <select id="area" name="area">${areas.map((a) => `<option value="${a.id}" ${a.id === areaInicial ? "selected" : ""}>${esc(a.nombre)}${esMia(a.id) ? "" : " (otra área)"}</option>`).join("")}</select>
+      <label>¿Quién la hace?</label>
+      <div class="opciones" id="quien"></div>
+      <div id="sel-persona" hidden><label for="persona">Persona</label><select id="persona" name="persona"></select></div>
       <label for="descripcion">Detalle <span class="ayuda">(opcional)</span></label>
       <textarea id="descripcion" name="descripcion" maxlength="4000" style="min-height:80px">${esc(nov?.descripcion ?? "")}</textarea>
       <label>Fotos <span class="ayuda">(opcional, hasta ${MAX_FOTOS})</span></label>
       <div id="fotos-tar"></div>
-      <label>Asignar a</label>
-      <div class="opciones">
-        ${areas.length ? `<label><input type="radio" name="a" value="area" checked><span>Un área</span></label>` : ""}
-        <label><input type="radio" name="a" value="persona" ${areas.length ? "" : "checked"}><span>${jefe ? "Una persona" : "Mí"}</span></label>
-        ${areas.length ? `<label><input type="radio" name="a" value="siguiente"><span>Siguiente turno</span></label>` : ""}
-      </div>
-      <div id="sel-area" ${areas.length ? "" : "hidden"}><label for="area">Área</label>
-        <select id="area" name="area">${areas.map((a) => `<option value="${a.id}" ${a.id === areaInicial ? "selected" : ""}>${esc(a.nombre)}</option>`).join("")}</select></div>
-      <div id="sel-persona" ${areas.length ? "hidden" : ""}><label for="persona">Persona</label>
-        <select id="persona" name="persona">${personas.map((p) => `<option value="${p.id}">${esc(p.nombre)}${p.area_id ? " · " + esc(areaDe(p.area_id)) : ""}</option>`).join("")}</select></div>
       <label>Urgencia</label>
       <div class="opciones">${Object.entries(URG).map(([k, v]) => `<label><input type="radio" name="urgencia" value="${k}" ${k === (nov?.urgencia ?? "media") ? "checked" : ""}><span>${v}</span></label>`).join("")}</div>
       <label for="limite">Fecha límite <span class="ayuda">(opcional)</span></label>
@@ -1442,24 +1442,27 @@ async function vNuevaTarea(_, params) {
     </form>`;
   const f = document.getElementById("f-tar");
   const selFotos = selectorFotos(document.getElementById("fotos-tar"));
-  f.querySelectorAll("input[name=a]").forEach((r) => r.addEventListener("change", () => {
-    document.getElementById("sel-area").hidden = f.a.value === "persona";
-    document.getElementById("sel-persona").hidden = f.a.value !== "persona";
-  }));
-  f.titulo.focus();
-  // La tarea de una persona queda en un área suya; si no soy gerente, en una que compartimos
-  const areaDePersona = (id) => {
-    const p = S.personas.find((x) => x.id === id);
-    const suyas = [p?.area_id, ...(p?.areas ?? [])].filter(Boolean);
-    return (todoElHotel() ? suyas[0] : suyas.find(esMia)) ?? null;
+  // Las opciones de "¿Quién la hace?" dependen del área elegida
+  const opcionesQuien = () => {
+    const area = f.area.value, jefeArea = nivel(rolEnArea(area)) >= nivel("jefe_servicio");
+    const gente = jefeArea ? delArea(area) : [];
+    const ops = [["area", "Alguien del área la toma"], ...(rolEnArea(area) ? [["yo", "Yo"], ["siguiente", "Siguiente turno"]] : []), ...(gente.length ? [["persona", "Una persona"]] : [])];
+    document.getElementById("quien").innerHTML = ops.map(([k, v], i) => `<label><input type="radio" name="a" value="${k}" ${i ? "" : "checked"}><span>${v}</span></label>`).join("");
+    f.persona.innerHTML = gente.map((p) => `<option value="${p.id}">${esc(p.nombre)} · ${ROL[p.rol]}</option>`).join("");
+    document.getElementById("sel-persona").hidden = true;
+    f.querySelectorAll("input[name=a]").forEach((r) => r.addEventListener("change", () => (document.getElementById("sel-persona").hidden = f.a.value !== "persona")));
   };
+  f.area.addEventListener("change", opcionesQuien);
+  opcionesQuien();
+  f.titulo.focus();
   alEnviar(f, async (d) => {
     const a = d.get("a");
-    const persona = a === "persona" ? d.get("persona") : null;
+    const persona = a === "persona" ? d.get("persona") : a === "yo" ? S.user.id : null;
+    if (!d.get("area")) throw new Error("Elige el área de la tarea.");
     const fila = {
       hotel_id: S.hotel.id, creado_por: S.user.id, titulo: String(d.get("titulo")).trim(),
       descripcion: String(d.get("descripcion") ?? "").trim() || null,
-      area_id: a === "persona" ? areaDePersona(persona) : d.get("area"),
+      area_id: d.get("area"),
       asignada_a: persona, asignada_por: persona ? S.user.id : null, siguiente_turno: a === "siguiente",
       urgencia: d.get("urgencia"), fecha_limite: d.get("limite") ? new Date(d.get("limite")).toISOString() : null,
       novedad_id: nov?.id ?? null, compartida_grupo: d.get("grupo") === "on",
@@ -1492,6 +1495,9 @@ async function vTarea([id]) {
   const puedeTomar = propia && abierta && !t.asignada_a && (jefe || esMia(t.area_id));
   const puedeMover = propia && (jefe || mia || t.creado_por === S.user.id);
   const candidatos = S.personas.filter((p) => p.activa && (!t.area_id || p.area_id === t.area_id || p.areas.includes(t.area_id) || nivel(p.rol) >= nivel("gerente")));
+  // Quien tiene la tarea la puede pasar a un compañero del área o devolverla a la bandeja, hasta 2 veces (021)
+  const puedePasar = propia && mia && !jefe && abierta && (t.pases ?? 0) < 2;
+  const companeros = candidatos.filter((p) => p.id !== S.user.id && (p.area_id === t.area_id || p.areas.includes(t.area_id)));
 
   app.innerHTML = `<p><a href="#/tareas">← Tareas</a></p>
     <div class="tarjeta">
@@ -1501,7 +1507,8 @@ async function vTarea([id]) {
         ${!propia ? `<span class="chip grupo">${esc(hotelDe(t.hotel_id))}</span>` : ""}</div>
       ${t.descripcion ? `<p class="desc">${esc(t.descripcion)}</p>` : ""}
       ${fotosHtml(fotos.filter((f) => !f.comentario_id && !f.de_cierre))}
-      <div class="meta">Asignada: <strong>${esc(asignadoTexto(t))}</strong>${t.asignada_por && t.asignada_por !== t.asignada_a ? " (por " + esc(nombreDe(t.asignada_por)) + ")" : ""}</div>
+      <div class="meta">Asignada: <strong>${esc(asignadoTexto(t))}</strong>${t.asignada_por && t.asignada_por !== t.asignada_a ? " (por " + esc(nombreDe(t.asignada_por)) + ")" : ""}${t.pases ? ` · <strong>pasada ${t.pases} ${t.pases === 1 ? "vez" : "veces"}</strong>` : ""}</div>
+      ${horasSinTomar(t) ? `<div class="meta"><span class="chip vencida">${sinTomarTexto(horasSinTomar(t))}</span></div>` : ""}
       <div class="meta">Creada por ${esc(t.creador?.nombre ?? "")} · ${fecha(t.creado_en)}${t.fecha_limite ? " · vence " + fmtFecha.format(new Date(t.fecha_limite)) : ""}</div>
       ${t.novedad ? `<div class="meta">Origen: <a href="#/novedad/${t.novedad.id}">${esc(t.novedad.descripcion.slice(0, 80))}</a></div>
         ${abierta ? `<div class="ayuda">Cuando se terminen todas las tareas de esa novedad, la novedad se cierra sola.</div>` : ""}` : ""}
@@ -1512,6 +1519,8 @@ async function vTarea([id]) {
       ${puedeTomar ? `<button class="btn" id="tomar">Tomarla yo</button>` : ""}
       ${puedeMover && t.estado === "pendiente" && t.asignada_a ? `<button class="btn sec" data-estado="en_curso">Empezar</button>` : ""}
       ${puedeMover && abierta ? `<button class="btn" id="hecha">Marcar hecha</button>` : ""}
+      ${puedePasar ? `<button class="btn sec" id="pasar">Pasar a otro</button>` : ""}
+      ${propia && mia && !jefe && abierta && !puedePasar ? `<p class="ayuda">Ya se pasó 2 veces: si no puedes terminarla, habla con tu jefe o líder.</p>` : ""}
       ${jefe && abierta ? `<button class="btn sec" id="asignar">${t.asignada_a ? "Reasignar" : "Asignar"}</button>` : ""}
       ${(jefe || t.creado_por === S.user.id) && propia && abierta ? `<button class="btn peligro chico" data-estado="cancelada">Cancelar tarea</button>` : ""}
       ${puedeMover && !abierta ? `<button class="btn sec" data-estado="pendiente">Reabrir</button>` : ""}
@@ -1557,6 +1566,25 @@ async function vTarea([id]) {
     });
     if (!elegido) return;
     await actualizar({ asignada_a: elegido, asignada_por: S.user.id, siguiente_turno: false }, "Tarea asignada a " + nombreDe(elegido) + ".");
+  });
+  alClic("#pasar", async () => {
+    const r = await new Promise((res) => {
+      const d = dialogo(`<form method="dialog"><h2 style="margin-top:0">Pasar la tarea</h2>
+        <label for="a-quien">¿A quién?</label><select id="a-quien">
+          ${companeros.map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join("")}
+          <option value="">Devolverla a la bandeja de ${esc(areaDe(t.area_id))}</option></select>
+        <label for="motivo">¿Por qué la pasas?</label><textarea id="motivo" required maxlength="500" style="min-height:70px" placeholder="Ej: se acabó mi turno, falta pintar la pared"></textarea>
+        <p class="ayuda">${(t.pases ?? 0) === 1 ? "Es la última vez que se puede pasar: después solo el jefe o el líder la mueve." : "Una tarea se puede pasar hasta 2 veces."} Queda en el historial.</p>
+        <div class="acciones"><button class="btn" value="si">Pasar</button><button class="btn sec" type="button" data-cerrar>Volver</button></div></form>`);
+      d.querySelector("form").addEventListener("submit", () => res({ a: d.querySelector("#a-quien").value || null, motivo: d.querySelector("#motivo").value.trim() }));
+      d.addEventListener("close", () => res(null));
+    });
+    if (!r || !r.motivo) return;
+    await q(sb.from("tareas").update({ asignada_a: r.a, asignada_por: r.a ? S.user.id : null, estado: "pendiente" }).eq("id", id));
+    const destino = r.a ? "a " + nombreDe(r.a) : "a la bandeja de " + areaDe(t.area_id);
+    await enviarOGuardar({ tipo: "comentario", resumen: "Pasó la tarea", datos: { id: uuid(), tarea_id: id, texto: `Pasó la tarea ${destino}. Motivo: ${r.motivo}` } });
+    aviso("Tarea pasada " + destino + ".");
+    ir("tareas");
   });
   const fc = document.getElementById("f-com");
   const selCom = selectorFotos(document.getElementById("fotos-com"), { chico: true });

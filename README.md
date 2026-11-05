@@ -16,9 +16,13 @@ Bitácora web de turnos para hoteles: novedades, entrega de turno, tareas y regi
 | Gerente | Todo su hotel: ve todo, manda avisos a todo el hotel o a cualquier área, agrega y cambia personas (hasta líder) y ve el registro. No cambia ajustes. |
 | Líder | Una o varias áreas: ve lo de ellas, les manda avisos, asigna sus tareas, arma sus turnos y checklists y ve el registro de lo que toca a sus áreas. |
 | Jefe de servicio | Su área: asigna sus tareas, le manda avisos y cierra novedades. |
-| Operador | Crear novedades y tareas, comentar, marcar checklists, tomar y completar tareas de su área. |
+| Operador | Crear novedades y mandar tareas a la bandeja de cualquier área, comentar, marcar checklists, tomar y completar tareas de su área y pasarlas a un compañero (con motivo, hasta 2 veces). |
 
 Las novedades no se borran: se anulan con un motivo. Todo cambio queda en `log_auditoria`, escrito por la base de datos.
+
+## Tareas
+
+Toda tarea pertenece a un área. Cualquiera puede mandar una tarea a la bandeja de cualquier área del hotel (por ejemplo, recepción le pide a mantenimiento arreglar algo). Allí alguien del área la toma, o el jefe, el líder o el gerente se la asigna a una persona; elegir persona es solo de ellos. Quien tiene una tarea puede pasarla a un compañero del área o devolverla a la bandeja, con un motivo que queda en la tarea, hasta 2 veces; después solo el jefe, el líder o el gerente la mueve. Las tareas que llevan más de 2 horas en la bandeja sin que nadie las tome se marcan en rojo. La base de datos aplica estas reglas (migración 021).
 
 ## Módulos
 
