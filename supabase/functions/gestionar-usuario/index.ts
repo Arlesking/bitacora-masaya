@@ -1,4 +1,5 @@
-// Crea, corrige y elimina usuarios, y cambia PINs. Solo gerentes (en su hotel) y administradores.
+// Crea, corrige y elimina usuarios, y cambia PINs. Gerentes (en su hotel), administradores
+// y líderes (solo operadores y jefes de servicio de sus áreas).
 // Se necesita la clave de servicio para crear cuentas, por eso esto no puede vivir en la página.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
@@ -30,8 +31,14 @@ Deno.serve(async (req) => {
 
     const b = await req.json();
     const { data: miRol } = await yo.rpc("mi_rol", { p_hotel: b.hotel_id });
-    if (!miRol || ORDEN.indexOf(miRol) < ORDEN.indexOf("gerente")) return resp({ error: "Solo gerentes o administradores" }, 403);
+    if (!miRol || ORDEN.indexOf(miRol) < ORDEN.indexOf("lider")) return resp({ error: "Solo líderes, gerentes o administradores" }, 403);
     const soyAdmin = miRol === "admin";
+    const soyLider = miRol === "lider";
+    let misAreas: string[] = [];
+    if (soyLider) {
+      const { data } = await yo.rpc("mis_areas", { p_hotel: b.hotel_id });
+      misAreas = data ?? [];
+    }
     if (b.pin !== undefined && !/^\d{6}$/.test(String(b.pin))) return resp({ error: "El PIN debe tener 6 dígitos" }, 400);
 
     if (b.accion === "crear") {
@@ -42,9 +49,18 @@ Deno.serve(async (req) => {
       if (ORDEN.indexOf(b.rol) >= ORDEN.indexOf("gerente") && !soyAdmin) return resp({ error: "Solo un administrador puede crear gerentes" }, 403);
       const areas = Array.isArray(b.areas) ? b.areas.filter((a: unknown) => typeof a === "string") : [];
       if (b.rol === "lider" && !areas.length && !b.area_id) return resp({ error: "Elige al menos un área para el líder" }, 400);
+      if (soyLider) {
+        if (!["operador", "jefe_servicio"].includes(b.rol)) return resp({ error: "Como líder puedes agregar operadores y jefes de servicio" }, 403);
+        if (!b.area_id || !misAreas.includes(b.area_id)) return resp({ error: "Elige una de tus áreas" }, 403);
+      }
 
       const { data: existente } = await admin.from("perfiles").select("id").eq("correo", correo).maybeSingle();
       let id = existente?.id;
+      if (id && soyLider) {
+        const { data: yaAqui } = await admin.from("membresias").select("id")
+          .eq("perfil_id", id).eq("hotel_id", b.hotel_id).maybeSingle();
+        if (yaAqui) return resp({ error: "Esa persona ya está en este hotel. Si está en otra área, pídele al gerente que la cambie." }, 409);
+      }
       if (!id) {
         if (!b.pin) return resp({ error: "Falta el PIN inicial" }, 400);
         const { data: nuevo, error } = await admin.auth.admin.createUser({
@@ -62,11 +78,20 @@ Deno.serve(async (req) => {
     }
 
     // Las demás acciones son sobre una persona de este hotel; a un gerente solo lo toca un administrador
-    const { data: m } = await admin.from("membresias").select("id, rol")
+    const { data: m } = await admin.from("membresias").select("id, rol, area_id")
       .eq("perfil_id", b.perfil_id).eq("hotel_id", b.hotel_id).maybeSingle();
     if (!m) return resp({ error: "Esa persona no está en este hotel" }, 404);
     if (b.perfil_id === u.user.id) return resp({ error: "Tus propios datos se cambian desde Mi cuenta" }, 400);
     if (ORDEN.indexOf(m.rol) >= ORDEN.indexOf("gerente") && !soyAdmin) return resp({ error: "Solo un administrador puede cambiar a un gerente" }, 403);
+    if (soyLider) {
+      // El líder solo maneja a operadores y jefes de sus áreas; su PIN y correo sirven en todos sus hoteles,
+      // así que a quien es líder o más en cualquier hotel lo maneja el gerente
+      if (ORDEN.indexOf(m.rol) >= ORDEN.indexOf("lider") || !m.area_id || !misAreas.includes(m.area_id)) {
+        return resp({ error: "Solo puedes cambiar a la gente de tus áreas" }, 403);
+      }
+      const { data: alto } = await yo.rpc("tiene_rol_alto", { p_perfil: b.perfil_id });
+      if (alto) return resp({ error: "Esta persona es líder o gerente en otro hotel. Pídele al gerente que la cambie." }, 403);
+    }
     const registrar = (accion: string, antes: unknown, despues: unknown) =>
       admin.from("log_auditoria").insert({ perfil_id: u.user.id, hotel_id: b.hotel_id, tabla: "perfiles", accion, registro_id: b.perfil_id, antes, despues });
 

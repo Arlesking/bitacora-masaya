@@ -1736,11 +1736,11 @@ async function clRegistro(cl, id, enlace) {
 }
 
 // ===== Ajustes =====
-// Gerente: personas. Líder: turnos y checklists de sus áreas. Administrador: todo.
+// Gerente: personas. Líder: la gente, los turnos y los checklists de sus áreas. Administrador: todo.
 function pestanasAjustes() {
   const lidera = areasQueLidero().length > 0;
   return [
-    ...(todoElHotel() ? [["personas", "Personas"]] : []),
+    ...(todoElHotel() || lidera ? [["personas", "Personas"]] : []),
     ...(esAdmin() ? [["areas", "Áreas"]] : []),
     ...(lidera ? [["turnos", "Turnos"]] : []),
     ...(esAdmin() ? [["tipos", "Tipos de novedad"]] : []),
@@ -1757,7 +1757,7 @@ async function vAdmin(_, params) {
     ${hotelesLider.length > 1 ? `<label for="ajuste-hotel">Hotel que estás configurando</label>
       <select id="ajuste-hotel">${hotelesLider.map((m) => `<option value="${m.hotel_id}" ${m.hotel_id === S.hotel.id ? "selected" : ""}>${esc(m.hotel.nombre)}${m.hotel.es_prueba ? " (pruebas)" : ""}</option>`).join("")}</select>`
       : `<p class="meta">Hotel: <strong>${esc(S.hotel.nombre)}</strong></p>`}
-    <p class="ayuda">${esAdmin() ? "Personas, áreas, turnos y tipos son propios de cada hotel." : todoElHotel() ? "Como gerente agregas y cambias a las personas de tu hotel." : "Como líder configuras los turnos y checklists de " + esc(areasTexto(S.misAreas)) + "."}</p>
+    <p class="ayuda">${esAdmin() ? "Personas, áreas, turnos y tipos son propios de cada hotel." : todoElHotel() ? "Como gerente agregas y cambias a las personas de tu hotel." : "Como líder de " + esc(areasTexto(S.misAreas)) + " agregas a su gente y configuras sus turnos y checklists."}</p>
     <nav class="pestanas">${pest.map(([k, v]) => `<a href="#/admin?ver=${k}" class="${k === tab ? "activo" : ""}">${v}</a>`).join("")}</nav>
     <div id="panel"></div>`;
   const panel = document.getElementById("panel");
@@ -1772,11 +1772,12 @@ async function vAdmin(_, params) {
 
 // Rol y área: operador y jefe tienen una área; el líder, una o varias; el gerente maneja todo el hotel.
 // Devuelve el HTML y, con conectarRolArea(), una función que lee lo elegido.
-function camposRolArea(pre, roles, p = {}) {
-  const activas = S.areas.filter((a) => a.activa);
+// soloAreas: el líder solo puede elegir entre las áreas que lidera, y siempre una
+function camposRolArea(pre, roles, p = {}, soloAreas = null) {
+  const activas = soloAreas ?? S.areas.filter((a) => a.activa);
   const areas = p.areas?.length ? p.areas : p.area_id ? [p.area_id] : [];
   return `<label for="${pre}-rol">Rol</label><select id="${pre}-rol">${roles.map((r) => `<option value="${r}" ${r === p.rol ? "selected" : ""}>${ROL[r]}</option>`).join("")}</select>
-    <div data-una><label for="${pre}-area">Área</label><select id="${pre}-area"><option value="">Sin área (todo el hotel)</option>
+    <div data-una><label for="${pre}-area">Área</label><select id="${pre}-area">${soloAreas ? "" : `<option value="">Sin área (todo el hotel)</option>`}
       ${activas.map((a) => `<option value="${a.id}" ${a.id === p.area_id ? "selected" : ""}>${esc(a.nombre)}</option>`).join("")}</select></div>
     <div data-varias><label>Áreas que lidera <span class="ayuda">(toca una o varias)</span></label><div class="opciones">
       ${activas.map((a) => `<label><input type="checkbox" data-area-lider value="${a.id}" ${areas.includes(a.id) ? "checked" : ""}><span>${esc(a.nombre)}</span></label>`).join("")}</div>
@@ -1810,13 +1811,21 @@ async function aPersonas(panel, recargar) {
   // Una persona tiene un solo correo y PIN para todos sus hoteles: se muestra dónde más trabaja
   const { data: enOtros } = await sb.rpc("otros_hoteles_de_personas", { p_hotel: S.hotel.id });
   const otros = Object.fromEntries((enOtros ?? []).map((o) => [o.perfil_id, o.hoteles]));
-  // El gerente agrega hasta líderes; a los gerentes los crea el administrador
-  const roles = ORDEN.filter((r) => r !== "admin" && (S.perfil.es_admin_global || nivel(r) < nivel("gerente")));
+  // El gerente agrega hasta líderes; a los gerentes los crea el administrador.
+  // El líder solo agrega operadores y jefes de servicio, y solo en sus áreas (la base de datos aplica lo mismo, 022).
+  const soyLider = !todoElHotel();
+  const misAreasLider = soyLider ? areasQueLidero() : null;
+  const roles = soyLider ? ["operador", "jefe_servicio"] : ORDEN.filter((r) => r !== "admin" && (S.perfil.es_admin_global || nivel(r) < nivel("gerente")));
+  const deMiArea = (p) => nivel(p.rol) < nivel("lider") && misAreasLider.some((a) => a.id === p.area_id);
+  const lista = soyLider ? S.personas.filter(deMiArea) : S.personas;
+  const editable = (p) => p.id !== S.user.id && (soyLider ? deMiArea(p) : S.perfil.es_admin_global || nivel(p.rol) < nivel("gerente"));
   panel.innerHTML = `<div class="acciones" style="margin-top:0"><button class="btn" id="nueva">+ Persona nueva</button><button class="btn sec" id="traer">Traer de otro hotel</button></div>
+    ${soyLider ? `<p class="ayuda">Aquí está la gente de tus áreas. Puedes agregar operadores y jefes de servicio.</p>` : ""}
     <div class="tabla-scroll" style="margin-top:14px"><table><thead><tr><th>Nombre</th><th>Rol</th><th>Área</th><th>Estado</th><th></th></tr></thead><tbody>
-    ${S.personas.map((p) => `<tr><td>${esc(p.nombre)}<div class="meta">${esc(p.correo)}</div>${otros[p.id] ? `<div class="meta">También en ${esc(otros[p.id])}</div>` : ""}</td><td>${ROL[p.rol]}</td>
+    ${lista.map((p) => `<tr><td>${esc(p.nombre)}<div class="meta">${esc(p.correo)}</div>${otros[p.id] ? `<div class="meta">También en ${esc(otros[p.id])}</div>` : ""}</td><td>${ROL[p.rol]}</td>
       <td>${esc(areaPersona(p))}</td><td>${p.activa ? "Activa" : "Sin acceso"}</td>
-      <td>${p.id !== S.user.id && (S.perfil.es_admin_global || nivel(p.rol) < nivel("gerente")) ? `<button class="btn sec chico" data-p="${p.id}">Editar</button>` : ""}</td></tr>`).join("")}
+      <td>${editable(p) ? `<button class="btn sec chico" data-p="${p.id}">Editar</button>` : ""}</td></tr>`).join("")
+      || `<tr><td colspan="5" class="meta">Todavía no hay nadie en tus áreas. Toca "+ Persona nueva".</td></tr>`}
     </tbody></table></div>
     <p class="ayuda">Cada persona tiene un solo correo y PIN para entrar a todos sus hoteles. ¿Ya trabaja en otro de tus hoteles? Usa "Traer de otro hotel".</p>`;
 
@@ -1828,7 +1837,7 @@ async function aPersonas(panel, recargar) {
       <label for="p-correo">Correo <span class="ayuda">(con el que entrará)</span></label><input id="p-correo" name="correo" type="email" required>
       <label for="p-pin">PIN inicial <span class="ayuda">(díselo en persona; puede cambiarlo después)</span></label>
       <input id="p-pin" name="pin" type="text" inputmode="numeric" maxlength="6" class="pin" value="${pin}" required>
-      ${camposRolArea("p", roles, { rol: "operador" })}
+      ${camposRolArea("p", roles, { rol: "operador", area_id: misAreasLider?.[0]?.id }, misAreasLider)}
       <div class="acciones"><button class="btn" type="submit">Crear</button><button class="btn sec" type="button" data-cerrar>Cancelar</button></div></form>`);
     const leerRol = conectarRolArea(d, "p");
     alEnviar(d.querySelector("form"), async (f) => {
@@ -1836,7 +1845,7 @@ async function aPersonas(panel, recargar) {
       const correo = String(f.get("correo")).trim().toLowerCase();
       const { data } = await sb.rpc("persona_por_correo", { p_hotel: S.hotel.id, p_correo: correo });
       const ya = data?.[0];
-      if (ya?.en_este_hotel) throw new Error(`${ya.nombre} ya está en este hotel. Para cambiar su rol o área, usa Editar en la lista.`);
+      if (ya?.en_este_hotel) throw new Error(soyLider ? `${ya.nombre} ya está en este hotel. Si está en otra área, pídele al gerente que la pase a la tuya.` : `${ya.nombre} ya está en este hotel. Para cambiar su rol o área, usa Editar en la lista.`);
       if (ya && !(await confirmar(`${ya.nombre} ya tiene usuario con ese correo. ¿Darle acceso a este hotel? Entrará con el mismo PIN que ya usa.`, { boton: "Dar acceso" }))) return;
       if (!ya && !/^\d{6}$/.test(f.get("pin"))) throw new Error("El PIN debe tener 6 dígitos.");
       await llamarFuncion({ accion: "crear", hotel_id: S.hotel.id, nombre: ya ? ya.nombre : f.get("nombre"), correo, pin: ya ? undefined : f.get("pin"), ...ra });
@@ -1863,7 +1872,7 @@ async function aPersonas(panel, recargar) {
       const area = S.areas.find((a) => a.activa && g.area && a.nombre.toLowerCase() === g.area.toLowerCase());
       cuerpo.innerHTML = `<form method="dialog"><p class="titulo" style="margin:0">${esc(g.nombre)}</p>
         <p class="meta" style="margin:4px 0 0">${esc(g.correo)} · trabaja en ${esc(g.hoteles)}</p>
-        ${camposRolArea("t", roles, { rol: g.rol, area_id: area?.id ?? null })}
+        ${camposRolArea("t", roles, { rol: roles.includes(g.rol) ? g.rol : roles[0], area_id: area?.id ?? misAreasLider?.[0]?.id ?? null }, misAreasLider)}
         <p class="ayuda">Entrará con el mismo correo y PIN que ya usa en ${esc(g.hoteles)}.</p>
         <div class="acciones"><button class="btn" type="submit">Agregar a este hotel</button><button class="btn sec" type="button" id="t-volver">Volver</button></div></form>`;
       alClic("#t-volver", async () => pintar(), cuerpo);
@@ -1897,7 +1906,7 @@ async function aPersonas(panel, recargar) {
       <label for="e-nombre">Nombre</label><input id="e-nombre" type="text" value="${esc(p.nombre)}" required>
       <label for="e-correo">Correo <span class="ayuda">(con el que entra)</span></label><input id="e-correo" type="email" value="${esc(p.correo)}" required>
       ${otros[p.id] ? `<p class="ayuda">También trabaja en ${esc(otros[p.id])}. Su correo y su PIN son los mismos en todos sus hoteles.</p>` : ""}
-      ${camposRolArea("e", roles, p)}
+      ${camposRolArea("e", roles, p, misAreasLider)}
       <label class="check"><input type="checkbox" id="e-activa" ${p.activa ? "checked" : ""}> Tiene acceso a este hotel</label>
       <div class="acciones"><button class="btn" id="e-guardar" type="button">Guardar</button><button class="btn sec" type="button" id="e-pin">Asignar PIN nuevo</button>
       <button class="btn sec" type="button" data-cerrar>Cerrar</button></div>
